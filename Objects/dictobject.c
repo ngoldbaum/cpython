@@ -462,7 +462,7 @@ dictkeys_incref(PyDictKeysObject *dk)
         return;
     }
 #ifdef Py_REF_DEBUG
-    _Py_IncRefTotal(_PyInterpreterState_GET());
+    _Py_IncRefTotal(_PyThreadState_GET());
 #endif
     INCREF_KEYS(dk);
 }
@@ -475,7 +475,7 @@ dictkeys_decref(PyInterpreterState *interp, PyDictKeysObject *dk, bool use_qsbr)
     }
     assert(dk->dk_refcnt > 0);
 #ifdef Py_REF_DEBUG
-    _Py_DecRefTotal(_PyInterpreterState_GET());
+    _Py_DecRefTotal(_PyThreadState_GET());
 #endif
     if (DECREF_KEYS(dk) == 1) {
         if (DK_IS_UNICODE(dk)) {
@@ -807,7 +807,7 @@ new_keys_object(PyInterpreterState *interp, uint8_t log2_size, bool unicode)
         }
     }
 #ifdef Py_REF_DEBUG
-    _Py_IncRefTotal(_PyInterpreterState_GET());
+    _Py_IncRefTotal(_PyThreadState_GET());
 #endif
     dk->dk_refcnt = 1;
     dk->dk_log2_size = log2_size;
@@ -995,7 +995,7 @@ clone_combined_dict_keys(PyDictObject *orig)
        we have it now; calling dictkeys_incref would be an error as
        keys->dk_refcnt is already set to 1 (after memcpy). */
 #ifdef Py_REF_DEBUG
-    _Py_IncRefTotal(_PyInterpreterState_GET());
+    _Py_IncRefTotal(_PyThreadState_GET());
 #endif
     return keys;
 }
@@ -2074,7 +2074,7 @@ dictresize(PyInterpreterState *interp, PyDictObject *mp,
 
         if (oldkeys != Py_EMPTY_KEYS) {
 #ifdef Py_REF_DEBUG
-            _Py_DecRefTotal(_PyInterpreterState_GET());
+            _Py_DecRefTotal(_PyThreadState_GET());
 #endif
             assert(oldkeys->dk_kind != DICT_KEYS_SPLIT);
             assert(oldkeys->dk_refcnt == 1);
