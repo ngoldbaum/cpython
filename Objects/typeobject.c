@@ -8858,6 +8858,7 @@ PyType_Ready(PyTypeObject *type)
         assert(_PyType_CheckConsistency(type));
     }
     END_TYPE_LOCK();
+    _Py_atomic_fence_seq_cst();
     return res;
 }
 
