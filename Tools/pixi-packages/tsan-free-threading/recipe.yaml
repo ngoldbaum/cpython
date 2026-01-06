@@ -17,8 +17,8 @@ build:
     file: ../build.sh
     env:
       PYTHON_VARIANT: "tsan-free-threading"
-python:
-  site_packages_path: "lib/python3.15t/site-packages"
+  python:
+    site_packages_path: "lib/python3.15t/site-packages"
 
 # derived from https://github.com/conda-forge/python-feedstock/blob/main/recipe/meta.yaml
 requirements:
