@@ -413,7 +413,7 @@ module_from_def_and_spec(
     for (cur_slot = def_like->m_slots; cur_slot && cur_slot->slot; cur_slot++) {
         // Macro to copy a non-NULL, non-repeatable slot that's unusable with
         // PyModuleDef. The destination must be initially NULL.
-#define COPY_COMMON_SLOT(SLOT, TYPE, DEST)                              \
+#define COPY_COMMON_SLOT(SLOT, TYPE, DEST, ORIG_FIELD)                  \
         do {                                                            \
             if (!(TYPE)(cur_slot->value)) {                             \
                 PyErr_Format(                                           \
@@ -422,7 +422,13 @@ module_from_def_and_spec(
                     name);                                              \
                 goto error;                                             \
             }                                                           \
-            if (original_def) {                                         \
+            if (ORIG_FIELD) {                                           \
+                PyErr_Format(                                           \
+                    PyExc_SystemError,                                  \
+                    "module %s: " #SLOT " used with PyModuleDef",       \
+                    name);                                              \
+            }                                                           \
+            else if (original_def) {                                    \
                 PyErr_Format(                                           \
                     PyExc_SystemError,                                  \
                     "module %s: " #SLOT " used with PyModuleDef",       \
@@ -453,7 +459,7 @@ module_from_def_and_spec(
             case Py_mod_exec:
                 has_execution_slots = 1;
                 if (!original_def) {
-                    COPY_COMMON_SLOT(Py_mod_exec, _Py_modexecfunc, m_exec);
+                    COPY_COMMON_SLOT(Py_mod_exec, _Py_modexecfunc, m_exec, 0);
                 }
                 break;
             case Py_mod_multiple_interpreters:
@@ -484,33 +490,33 @@ module_from_def_and_spec(
                 }
                 break;
             case Py_mod_name:
-                COPY_COMMON_SLOT(Py_mod_name, char*, def_like->m_name);
+                COPY_COMMON_SLOT(Py_mod_name, char*, def_like->m_name, original_def->m_name);
                 break;
             case Py_mod_doc:
-                COPY_COMMON_SLOT(Py_mod_doc, char*, def_like->m_doc);
+                COPY_COMMON_SLOT(Py_mod_doc, char*, def_like->m_doc, original_def->m_doc);
                 break;
             case Py_mod_state_size:
                 COPY_COMMON_SLOT(Py_mod_state_size, Py_ssize_t,
-                                 def_like->m_size);
+                                 def_like->m_size, 0);
                 break;
             case Py_mod_methods:
                 COPY_COMMON_SLOT(Py_mod_methods, PyMethodDef*,
-                                 def_like->m_methods);
+                                 def_like->m_methods, 0);
                 break;
             case Py_mod_state_traverse:
                 COPY_COMMON_SLOT(Py_mod_state_traverse, traverseproc,
-                                 def_like->m_traverse);
+                                 def_like->m_traverse, 0);
                 break;
             case Py_mod_state_clear:
                 COPY_COMMON_SLOT(Py_mod_state_clear, inquiry,
-                                 def_like->m_clear);
+                                 def_like->m_clear, 0);
                 break;
             case Py_mod_state_free:
                 COPY_COMMON_SLOT(Py_mod_state_free, freefunc,
-                                 def_like->m_free);
+                                 def_like->m_free, 0);
                 break;
             case Py_mod_token:
-                COPY_COMMON_SLOT(Py_mod_token, void*, token);
+                COPY_COMMON_SLOT(Py_mod_token, void*, token, 0);
                 break;
             default:
                 assert(cur_slot->slot < 0 || cur_slot->slot > _Py_mod_LAST_SLOT);
