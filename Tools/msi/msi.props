@@ -131,6 +131,9 @@
         <LinkerBindInputPaths Include="$(CRTRedist)">
             <BindName>redist</BindName>
         </LinkerBindInputPaths>
+        <LinkerBindInputPaths Include="$(BuildPath)">
+            <BindName>build</BindName>
+        </LinkerBindInputPaths>
         <LinkerBindInputPaths Include="$(BuildPath32)">
             <BindName>build32</BindName>
         </LinkerBindInputPaths>
