@@ -1,0 +1,19 @@
+name: macOS free-threading only
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+    - 'debug-*'
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-ft:
+    name: macOS (free-threading)
+    uses: ./.github/workflows/reusable-macos.yml
+    with:
+      free-threading: true
+      os: macos-26

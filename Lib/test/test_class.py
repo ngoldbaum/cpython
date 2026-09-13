@@ -1048,9 +1048,49 @@ class TestInlineValues(unittest.TestCase):
                 # The dictionary was cleared, as expected.
                 break
         else:
+            details = _diagnose_detach_no_memory(A)
             if not raised:
-                self.fail("MemoryError was not raised during deallocation")
-            self.fail("the dictionary was not cleared")
+                self.fail("MemoryError was not raised during deallocation\n"
+                          + details)
+            self.fail("the dictionary was not cleared\n" + details)
+
+def _diagnose_detach_no_memory(cls):
+    # Temporary instrumentation for gh-157429: rerun the loop with bookkeeping
+    # in the same process and report what happened at each failing allocation.
+    import _testcapi
+    import _testinternalcapi
+    import gc
+    import sys
+    import weakref
+    lines = [f"gc.get_count()={gc.get_count()} c_recursion_remaining="
+             f"{_testinternalcapi.get_c_recursion_remaining()}"]
+    for n in range(60):
+        a = cls()
+        d = a.__dict__
+        wr = weakref.ref(a)
+        inline = _testinternalcapi.has_inline_values(a)
+        blocks = sys.getallocatedblocks()
+        try:
+            with support.catch_unraisable_exception() as ex:
+                _testcapi.set_nomemory(n, n + 1)
+                try:
+                    del a
+                finally:
+                    _testcapi.remove_mem_hooks()
+                u = ex.unraisable
+        except MemoryError:
+            lines.append(f"n={n}: MemoryError outside deallocation "
+                         f"freed={wr() is None}")
+            continue
+        info = None
+        if u is not None:
+            info = (u.exc_type.__name__, u.err_msg, repr(u.object)[:80])
+        lines.append(f"n={n}: inline={inline} freed={wr() is None} "
+                     f"blocks={sys.getallocatedblocks() - blocks:+d} "
+                     f"cleared={'a' not in d} unraisable={info}")
+    lines.append(f"gc.collect()={gc.collect()}")
+    return "\n".join(lines)
+
 
 class DefinitionOrderTests(unittest.TestCase):
     # PEP 520: Preserving Class Attribute Definition Order
