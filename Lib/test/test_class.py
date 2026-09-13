@@ -1027,6 +1027,7 @@ class TestInlineValues(unittest.TestCase):
         # dictionary from the object, but other allocations can happen
         # first, so try to fail every one of the first allocations.
         raised = False
+        outcomes = []
         for n in range(20):
             a = A()
             d = a.__dict__
@@ -1037,20 +1038,28 @@ class TestInlineValues(unittest.TestCase):
                         del a
                     finally:
                         _testcapi.remove_mem_hooks()
-                    exc_type = ex.unraisable and ex.unraisable.exc_type
+                    unraisable = ex.unraisable
             except MemoryError:
                 # The failing allocation was not in the deallocation code.
+                outcomes.append((n, "MemoryError outside deallocation"))
                 continue
-            if exc_type is not MemoryError:
+            if unraisable is None:
+                outcomes.append((n, "no unraisable exception"))
+                continue
+            if unraisable.exc_type is not MemoryError:
+                outcomes.append((n, unraisable.exc_type, unraisable.err_msg))
                 continue
             raised = True
             if "a" not in d:
                 # The dictionary was cleared, as expected.
                 break
+            outcomes.append((n, "MemoryError", unraisable.err_msg,
+                             "dict not cleared"))
         else:
             if not raised:
-                self.fail("MemoryError was not raised during deallocation")
-            self.fail("the dictionary was not cleared")
+                self.fail("MemoryError was not raised during deallocation: "
+                          f"{outcomes}")
+            self.fail(f"the dictionary was not cleared: {outcomes}")
 
 class DefinitionOrderTests(unittest.TestCase):
     # PEP 520: Preserving Class Attribute Definition Order
