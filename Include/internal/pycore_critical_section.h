@@ -103,9 +103,30 @@ _PyCriticalSection_IsActive(uintptr_t tag)
     return tag != 0 && (tag & _Py_CRITICAL_SECTION_INACTIVE) == 0;
 }
 
+static inline PyCriticalSection *
+_PyCriticalSection_Untag(uintptr_t tag)
+{
+    return (PyCriticalSection *)(tag & ~_Py_CRITICAL_SECTION_MASK);
+}
+
 static inline void
 _PyCriticalSection_BeginMutex(PyThreadState *tstate, PyCriticalSection *c, PyMutex *m)
 {
+    // Skip locking if the top-most critical section already holds m. This is
+    // the same check as in _PyCriticalSection_BeginSlow, done before the
+    // compare-and-swap so that recursive acquisition doesn't pay for a failed
+    // atomic operation.
+    uintptr_t top = tstate->critical_section;
+    if (top != 0) {
+        PyCriticalSection *prev = _PyCriticalSection_Untag(top);
+        if (prev->_cs_mutex == m ||
+            ((top & _Py_CRITICAL_SECTION_TWO_MUTEXES) &&
+             ((PyCriticalSection2 *)prev)->_cs_mutex2 == m)) {
+            c->_cs_mutex = NULL;
+            c->_cs_prev = 0;
+            return;
+        }
+    }
     if (PyMutex_LockFast(m)) {
         c->_cs_mutex = m;
         c->_cs_prev = tstate->critical_section;

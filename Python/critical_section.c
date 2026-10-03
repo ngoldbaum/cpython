@@ -9,14 +9,6 @@ static_assert(_Alignof(PyCriticalSection) >= 4,
               "critical section must be aligned to at least 4 bytes");
 #endif
 
-#ifdef Py_GIL_DISABLED
-static PyCriticalSection *
-untag_critical_section(uintptr_t tag)
-{
-    return (PyCriticalSection *)(tag & ~_Py_CRITICAL_SECTION_MASK);
-}
-#endif
-
 void
 _PyCriticalSection_BeginSlow(PyThreadState *tstate, PyCriticalSection *c, PyMutex *m)
 {
@@ -27,7 +19,7 @@ _PyCriticalSection_BeginSlow(PyThreadState *tstate, PyCriticalSection *c, PyMute
     // If the top-most critical section is a two-mutex critical section,
     // then locking is skipped if either mutex is m.
     if (tstate->critical_section) {
-        PyCriticalSection *prev = untag_critical_section(tstate->critical_section);
+        PyCriticalSection *prev = _PyCriticalSection_Untag(tstate->critical_section);
         if (prev->_cs_mutex == m) {
             c->_cs_mutex = NULL;
             c->_cs_prev = 0;
@@ -35,7 +27,7 @@ _PyCriticalSection_BeginSlow(PyThreadState *tstate, PyCriticalSection *c, PyMute
         }
         if (tstate->critical_section & _Py_CRITICAL_SECTION_TWO_MUTEXES) {
             PyCriticalSection2 *prev2 = (PyCriticalSection2 *)
-                untag_critical_section(tstate->critical_section);
+                _PyCriticalSection_Untag(tstate->critical_section);
             if (prev2->_cs_mutex2 == m) {
                 c->_cs_mutex = NULL;
                 c->_cs_prev = 0;
@@ -77,7 +69,7 @@ _PyCriticalSection2_BeginSlow(PyThreadState *tstate, PyCriticalSection2 *c, PyMu
     if (tstate->critical_section &&
         tstate->critical_section & _Py_CRITICAL_SECTION_TWO_MUTEXES) {
         PyCriticalSection2 *prev2 = (PyCriticalSection2 *)
-            untag_critical_section(tstate->critical_section);
+            _PyCriticalSection_Untag(tstate->critical_section);
         assert((uintptr_t)m1 < (uintptr_t)m2);
         assert((uintptr_t)prev2->_cs_base._cs_mutex <
             (uintptr_t)prev2->_cs_mutex2);
@@ -111,7 +103,7 @@ _PyCriticalSection_SuspendAll(PyThreadState *tstate)
 #ifdef Py_GIL_DISABLED
     uintptr_t *tagptr = &tstate->critical_section;
     while (_PyCriticalSection_IsActive(*tagptr)) {
-        PyCriticalSection *c = untag_critical_section(*tagptr);
+        PyCriticalSection *c = _PyCriticalSection_Untag(*tagptr);
 
         if (c->_cs_mutex) {
             PyMutex_Unlock(c->_cs_mutex);
@@ -134,7 +126,7 @@ _PyCriticalSection_Resume(PyThreadState *tstate)
 {
 #ifdef Py_GIL_DISABLED
     uintptr_t p = tstate->critical_section;
-    PyCriticalSection *c = untag_critical_section(p);
+    PyCriticalSection *c = _PyCriticalSection_Untag(p);
     assert(!_PyCriticalSection_IsActive(p));
 
     PyMutex *m1 = c->_cs_mutex;
