@@ -87,6 +87,9 @@ PyAPI_DATA(PyObject *) PyExc_LookupError;
 PyAPI_DATA(PyObject *) PyExc_AssertionError;
 PyAPI_DATA(PyObject *) PyExc_AttributeError;
 PyAPI_DATA(PyObject *) PyExc_BufferError;
+#if !defined(Py_LIMITED_API) || Py_LIMITED_API+0 >= 0x03100000
+PyAPI_DATA(PyObject *) PyExc_BufferConflictError;
+#endif
 PyAPI_DATA(PyObject *) PyExc_EOFError;
 PyAPI_DATA(PyObject *) PyExc_FloatingPointError;
 PyAPI_DATA(PyObject *) PyExc_OSError;

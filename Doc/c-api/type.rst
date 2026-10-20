@@ -477,6 +477,35 @@ the initialization is done:
    .. versionadded:: 3.14
 
 
+.. c:function:: int PyUnstable_Type_RegisterBufferCapabilities(PyTypeObject *type, uint64_t capabilities)
+
+   Declare that *type* supports :ref:`stable reads <buffer-stable-reads>`.
+   Set *capabilities* to :c:macro:`PyBUF_STABLE_READ`.
+
+   Use this function for types whose buffer implementation you control and
+   have checked against the :ref:`stable-read requirements
+   <buffer-stable-exporters>`. Register after
+   configuring the type and before exposing it or creating instances or
+   subclasses. For a heap type, call :c:func:`PyType_Freeze` first, or use
+   :c:macro:`Py_tp_buffer_capabilities` to declare support during creation.
+
+   The type must be ready and immutable, with immutable base classes. Its
+   metaclass must be :class:`type`, and its :c:member:`~PyBufferProcs.bf_getbuffer`
+   implementation must be written in C. Module types and their subclasses
+   cannot declare support, since even immutable module types allow
+   ``__class__`` changes that can replace the buffer callbacks.
+
+   Each type needs its own declaration. Repeating the same declaration
+   succeeds. Once registered, capabilities cannot be changed or removed.
+
+   Return ``0`` on success, or ``-1`` with an exception set on failure.
+   Unsupported *capabilities* values raise :exc:`ValueError`; a type that
+   does not meet the requirements raises :exc:`TypeError`.
+   Failure leaves any existing declaration unchanged.
+
+   .. versionadded:: 3.16
+
+
 .. _pyslot_type_slot_ids:
 
 Type slot IDs
@@ -505,6 +534,7 @@ struct field:
 * :c:data:`Py_tp_token`
 * :c:data:`Py_tp_metaclass`
 * :c:data:`Py_tp_module`
+* :c:macro:`Py_tp_buffer_capabilities`
 
 The following “offset” fields cannot be set using :c:type:`PyType_Slot`:
 
@@ -747,6 +777,24 @@ underlying structures:
    Use :c:func:`PyType_GetModule` instead.
 
    .. versionadded:: 3.15
+
+.. c:macro:: Py_tp_buffer_capabilities
+
+   Declare stable-read support when creating an immutable heap type::
+
+      PySlot_UINT64(Py_tp_buffer_capabilities, PyBUF_STABLE_READ)
+
+   The type must meet the :ref:`stable-read exporter requirements
+   <buffer-stable-exporters>` and the type requirements of
+   :c:func:`PyUnstable_Type_RegisterBufferCapabilities`.
+   An invalid declaration causes type creation to fail.
+
+   This slot requires :c:type:`PySlot`; it may not be used in
+   :c:member:`PyType_Spec.slots` or a :c:type:`PyType_Slot` array included
+   through :c:macro:`Py_tp_slots`.
+
+   .. versionadded:: 3.16
+
 
 .. c:macro:: Py_tp_token
 

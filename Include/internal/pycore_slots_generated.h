@@ -108,6 +108,7 @@ _PySlot_resolve_type_slot(uint16_t slot_id)
         case Py_tp_flags:
         case Py_tp_metaclass:
         case Py_tp_module:
+        case Py_tp_buffer_capabilities:
             return slot_id;
         default:
             return Py_slot_invalid;
@@ -740,6 +741,7 @@ _PySlot_get_dtype(uint16_t slot_id)
         case Py_tp_module: return _PySlot_DTYPE_PTR;
         case Py_mod_abi: return _PySlot_DTYPE_PTR;
         case Py_mod_token: return _PySlot_DTYPE_PTR;
+        case Py_tp_buffer_capabilities: return _PySlot_DTYPE_UINT64;
         default: return _PySlot_DTYPE_VOID;
     }
 }
@@ -855,6 +857,7 @@ _PySlot_get_null_handling(uint16_t slot_id)
         case Py_tp_itemsize:
         case Py_tp_flags:
         case Py_mod_state_size:
+        case Py_tp_buffer_capabilities:
             return _PySlot_PROBLEM_ALLOW;
         case Py_mp_subscript:
         case Py_nb_absolute:

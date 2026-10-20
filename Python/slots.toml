@@ -834,3 +834,8 @@ duplicates = 'allow'
 name = 'Py_mod_token'
 kind = 'mod'
 dtype = 'ptr'
+
+[111]
+name = 'Py_tp_buffer_capabilities'
+kind = 'type'
+dtype = 'uint64'

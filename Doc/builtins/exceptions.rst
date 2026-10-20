@@ -179,6 +179,15 @@ The following exceptions are used mostly as base classes for other exceptions.
    performed.
 
 
+.. exception:: BufferConflictError
+
+   Raised when a buffer operation conflicts with an active access, such as
+   an attempt to write while a stable read is active. This is a subclass of
+   :exc:`BufferError`. See :ref:`buffer-stable-reads`.
+
+   .. versionadded:: 3.16
+
+
 .. exception:: LookupError
 
    The base class for the exceptions that are raised when a key or index used on

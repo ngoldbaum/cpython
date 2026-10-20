@@ -128,7 +128,7 @@ a buffer, see :c:func:`PyObject_GetBuffer`.
    .. c:member:: int readonly
 
       An indicator of whether the buffer is read-only. This field is controlled
-      by the :c:macro:`PyBUF_WRITABLE` flag.
+      by the :c:macro:`PyBUF_WRITABLE` and :c:macro:`PyBUF_STABLE_READ` flags.
 
    .. c:member:: Py_ssize_t itemsize
 
@@ -251,16 +251,25 @@ readonly, format
    .. c:macro:: PyBUF_WRITABLE
 
       Controls the :c:member:`~Py_buffer.readonly` field. If set, the exporter
-      MUST provide a writable buffer or else report failure. Otherwise, the
-      exporter MAY provide either a read-only or writable buffer, but the choice
-      MUST be consistent for all consumers. For example, :c:expr:`PyBUF_SIMPLE | PyBUF_WRITABLE`
-      can be used to request a simple writable buffer.
+      MUST provide a writable buffer or else report failure. Otherwise, unless
+      :c:macro:`PyBUF_STABLE_READ` is set, the exporter MAY provide either a
+      read-only or writable buffer, but the choice MUST be consistent for all
+      consumers. For example, :c:expr:`PyBUF_SIMPLE | PyBUF_WRITABLE` can be used
+      to request a simple writable buffer.
 
    .. c:macro:: PyBUF_WRITEABLE
 
       This is an alias to :c:macro:`PyBUF_WRITABLE`.
 
       .. soft-deprecated:: 3.13
+
+   .. c:macro:: PyBUF_STABLE_READ
+
+      Request a read-only buffer whose data remains unchanged until release.
+      See :ref:`buffer-stable-reads` for usage and
+      :ref:`buffer-stable-exporters` for exporter requirements.
+
+      .. versionadded:: 3.16
 
    .. c:macro:: PyBUF_FORMAT
 
@@ -354,6 +363,50 @@ have to call :c:func:`PyBuffer_IsContiguous` to determine contiguity.
 +-------------------------------+-------+---------+------------+--------+----------+--------+
 | .. c:macro:: PyBUF_CONTIG_RO  |  yes  |   NULL  |    NULL    |   C    |  1 or 0  |  NULL  |
 +-------------------------------+-------+---------+------------+--------+----------+--------+
+
+
+.. _buffer-stable-reads:
+
+Stable reads
+============
+
+A buffer exported with stable reads allows a consumer to safely read shared
+data without making a copy and be assured that the data in the buffer will not
+mutate, even while other threads run. Its data, backing storage, and metadata,
+such as shape and strides, must remain unchanged until release.
+
+A stable buffer export request appends :c:macro:`PyBUF_STABLE_READ` to a
+read-only request passed to :c:func:`PyObject_GetBuffer`. For example,
+:c:expr:`PyBUF_SIMPLE | PyBUF_STABLE_READ` requests a stable byte buffer.
+The base request must be :c:macro:`PyBUF_SIMPLE`, :c:macro:`PyBUF_ND`,
+:c:macro:`PyBUF_STRIDES`, :c:macro:`PyBUF_C_CONTIGUOUS`,
+:c:macro:`PyBUF_F_CONTIGUOUS`, :c:macro:`PyBUF_ANY_CONTIGUOUS`, or
+:c:macro:`PyBUF_INDIRECT`. Add :c:macro:`PyBUF_FORMAT` if needed, except
+with :c:macro:`PyBUF_SIMPLE`. Read-only compound requests are accepted
+when their numeric values match these combinations.
+
+For exporter requirements, see :ref:`buffer-stable-exporters`.
+
+Errors and limitations
+~~~~~~~~~~~~~~~~~~~~~~
+
+An active conflict raises :exc:`BufferConflictError`, a subclass of
+:exc:`BufferError`. Consumers must not retry the operation with a weaker
+request that would lose the stability guarantee.
+
+An unsupported stable request raises plain :exc:`BufferError`. A consumer
+may then try an ordinary request only if it explicitly accepts weaker
+semantics. Declaring support does not guarantee that every instance or
+representation supports stable reads. Exporters that cannot control all
+writers, including code outside Python, cannot offer stable reads.
+
+Any other numeric flag combination raises :exc:`ValueError`, including
+:c:macro:`PyBUF_STABLE_READ` combined with :c:macro:`PyBUF_WRITABLE`.
+Stable requests enforce the documented combinations even when an exporter
+accepts additional combinations for ordinary requests.
+
+The guarantee covers the buffer itself, not objects referenced by its
+contents. Those objects may still change.
 
 
 Complex arrays

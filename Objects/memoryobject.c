@@ -14,6 +14,7 @@
 #include "pycore_abstract.h"      // _PyIndex_Check()
 #include "pycore_memoryobject.h"  // _PyManagedBuffer_Type
 #include "pycore_object.h"        // _PyObject_GC_UNTRACK()
+#include "pycore_pybuffer.h"      // _PyObject_GetStableBuffer()
 #include "pycore_strhex.h"        // _Py_strhex_with_sep()
 #include <stddef.h>               // offsetof()
 
@@ -917,7 +918,7 @@ PyMemoryView_FromObjectAndFlags(PyObject *v, int flags)
 {
     _PyManagedBufferObject *mbuf;
 
-    if (PyMemoryView_Check(v)) {
+    if (PyMemoryView_Check(v) && !(flags & PyBUF_STABLE_READ)) {
         PyMemoryViewObject *mv = (PyMemoryViewObject *)v;
         if (memoryview_pin(mv) < 0) {
             return NULL;
@@ -934,7 +935,7 @@ PyMemoryView_FromObjectAndFlags(PyObject *v, int flags)
         memoryview_unpin(mv);
         return result;
     }
-    else if (PyObject_CheckBuffer(v)) {
+    else if ((flags & PyBUF_STABLE_READ) || PyObject_CheckBuffer(v)) {
         PyObject *ret;
         mbuf = (_PyManagedBufferObject *)_PyManagedBuffer_FromObject(v, flags);
         if (mbuf == NULL)
@@ -961,7 +962,13 @@ _PyMemoryView_FromBufferProc(PyObject *v, int flags, getbufferproc bufferproc)
     if (mbuf == NULL)
         return NULL;
 
-    int res = bufferproc(v, &mbuf->master, flags);
+    int res;
+    if (flags & PyBUF_STABLE_READ) {
+        res = _PyObject_GetStableBuffer(v, &mbuf->master, flags, bufferproc);
+    }
+    else {
+        res = bufferproc(v, &mbuf->master, flags);
+    }
     if (res < 0) {
         mbuf->master.obj = NULL;
         Py_DECREF(mbuf);

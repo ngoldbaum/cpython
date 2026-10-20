@@ -121,6 +121,10 @@ PyAPI_FUNC(void) PyBuffer_Release(Py_buffer *view);
 #define PyBUF_ANY_CONTIGUOUS (0x0080 | PyBUF_STRIDES)
 #define PyBUF_INDIRECT (0x0100 | PyBUF_STRIDES)
 
+#if !defined(Py_LIMITED_API) || Py_LIMITED_API+0 >= 0x03100000
+#define PyBUF_STABLE_READ 0x0400
+#endif
+
 #define PyBUF_CONTIG (PyBUF_ND | PyBUF_WRITABLE)
 #define PyBUF_CONTIG_RO (PyBUF_ND)
 

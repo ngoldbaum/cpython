@@ -11,6 +11,7 @@ BaseException
       ├── AssertionError
       ├── AttributeError
       ├── BufferError
+      │    └── BufferConflictError
       ├── EOFError
       ├── ExceptionGroup [BaseExceptionGroup]
       ├── ImportError

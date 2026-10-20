@@ -9,6 +9,9 @@ extern "C" {
 #endif
 
 
+extern int _PyObject_GetStableBuffer(PyObject *obj, Py_buffer *view,
+                                    int flags, getbufferproc callback);
+
 // Exported for the _interpchannels module.
 PyAPI_FUNC(int) _PyBuffer_ReleaseInInterpreter(
         PyInterpreterState *interp, Py_buffer *view);

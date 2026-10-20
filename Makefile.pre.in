@@ -2236,9 +2236,10 @@ regen-typeslots:
 	$(MAKE) regen-slots
 
 .PHONY: regen-slots
-regen-slots: Python/slots.toml
+regen-slots: Python/slots.toml Misc/stable_abi.toml
 	# Regenerate {Python,Include}/slots_generated.{c,h}
-	# from Python/slots.toml using Tools/build/generate_slots.py
+	# from Python/slots.toml and Misc/stable_abi.toml
+	# using Tools/build/generate_slots.py
 	$(PYTHON_FOR_REGEN) $(srcdir)/Tools/build/generate_slots.py \
 		--generate-all
 

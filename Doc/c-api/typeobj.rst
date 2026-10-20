@@ -2981,6 +2981,10 @@ Buffer Object Structures
 
    (5) Return ``0``.
 
+   Types supporting stable reads must also follow the
+   :ref:`acquisition requirements <buffer-stable-exporter-acquisition>`
+   below for stable and potentially writable exports.
+
    **Thread safety:**
 
    In the :term:`free-threaded build`, implementations must ensure:
@@ -3044,6 +3048,9 @@ Buffer Object Structures
 
    (2) If the counter is ``0``, free all memory associated with *view*.
 
+   Stable-read conflict tracking has additional
+   :ref:`cleanup ordering requirements <buffer-stable-exporter-release>`.
+
    **Thread safety:**
 
    In the :term:`free-threaded build`:
@@ -3067,6 +3074,131 @@ Buffer Object Structures
 
    :c:func:`PyBuffer_Release` is the interface for the consumer that
    wraps this function.
+
+
+.. _buffer-stable-exporters:
+
+Supporting stable reads
+^^^^^^^^^^^^^^^^^^^^^^^
+
+A buffer exporting type can opt into supporting :ref:`stable reads
+<buffer-stable-reads>` by defining a :c:macro:`Py_tp_buffer_capabilities`
+slot for heap types or calling
+:c:func:`PyUnstable_Type_RegisterBufferCapabilities` for static or
+already-created heap types. The declaration asserts that the exporter meets
+the requirements below. CPython checks the declaration and returned buffer
+fields; the exporter is responsible for enforcing stability. The declaration
+covers the resolved buffer callbacks, including inherited callbacks, which
+must satisfy these requirements for instances of the declaring type.
+
+For a stable export, set :c:member:`Py_buffer.readonly` to ``1`` and
+:c:member:`Py_buffer.obj` to the exporting object.
+
+Protecting the view
+~~~~~~~~~~~~~~~~~~~
+
+The guarantee covers every element byte reachable through the view's layout,
+the pointer cells followed through :c:member:`~Py_buffer.suboffsets`, and the
+contents of :c:member:`~Py_buffer.format`, :c:member:`~Py_buffer.shape`,
+:c:member:`~Py_buffer.strides`, and :c:member:`~Py_buffer.suboffsets`.
+Keep these unchanged and their storage valid at the same addresses while
+the export is active.
+
+Before declaring support, audit every supported path that can change this
+data, metadata, or storage. This includes Python methods, C APIs, aliases
+through other objects, callbacks, external writers such as I/O or devices,
+and cleanup such as GC clearing and finalization. Each path must preserve
+active stable views. Cleanup that cannot fail must defer destructive work
+or retain the protected storage.
+
+Immutable storage and metadata need no conflict tracking. For mutable
+storage, all aliases must share conflict checks and state. Stable exports
+and ordinary reads may coexist. Writes, potentially writable exports, and
+operations that could move or invalidate the protected storage conflict
+with stable exports, in either order. Treat an ordinary export as potentially
+writable unless its resulting access is guaranteed read-only.
+
+Operations on new private storage are permitted if existing views retain
+their original storage and contents. Conflict tracking may conservatively
+cover a whole allocation even when views address disjoint regions.
+
+.. _buffer-stable-exporter-acquisition:
+
+Acquiring and releasing exports
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Check for conflicts and record an accepted stable or potentially writable
+export as one atomic action under the shared synchronization. Do not read
+mutable layout or storage state until conflicting operations have been
+excluded or those reads are otherwise synchronized. This includes
+conflicting operations that do their work outside the synchronization
+used to protect the tracking state.
+
+Record an accepted export before releasing synchronization, then fill the
+view with any further synchronization needed to do so safely. A stable
+export's record excludes writes and invalidation during construction.
+A potentially writable export's record excludes only stable acquisitions;
+normal synchronization must still protect its construction from other
+operations. Do not re-enter the exporter or expose an unfinished view
+during acquisition. CPython C API calls may be re-entrant; see
+:ref:`buffer-stable-read-synchronization`. On failure, undo the acquisition's
+work before removing its record.
+
+Each tracked export must set :c:member:`Py_buffer.obj` to the exporting
+object and provide :c:member:`~PyBufferProcs.bf_releasebuffer`. This also
+applies to ordinary potentially writable exports, so release reaches the
+callback responsible for removing their records.
+
+.. _buffer-stable-exporter-release:
+
+In the release callback, finish accessing protected data and metadata, and
+complete cleanup that could interfere with the next operation, before
+atomically removing the record. Remove it exactly once. Reference drops that
+cannot affect subsequent operations may follow removal.
+
+.. _buffer-stable-read-synchronization:
+
+Synchronizing operations
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+For a write or storage change, check for conflicts and either hold the
+shared synchronization throughout the operation or record the operation
+before releasing it. Keep the record until the operation has finished.
+
+If a C API call can suspend a critical section or a callback can re-enter
+the exporter, retain an operation record across that interval or recheck
+conflicts before continuing the protected work. Recheck after every such
+interval. Take care to avoid deadlocks: do not hold the coordination lock
+for the lifetime of an export or while waiting for another thread.
+
+When an operation ends, its accesses must *happen-before* the next
+incompatible operation's accesses in the C memory model. With atomics,
+publish completion with release semantics and observe it with acquire
+semantics before admitting that next operation. Locks or other
+synchronization must provide equivalent ordering. There is no additional
+ordering guarantee between compatible operations.
+
+Fail on an active conflict with :exc:`BufferConflictError`, leaving the
+protected view unchanged. An operation may wait to acquire the shared
+synchronization, but must not wait for a conflicting export or operation to
+end. C interfaces that cannot raise Python exceptions must use their
+documented failure conventions and preserve the protected view.
+
+Writable pointers
+~~~~~~~~~~~~~~~~~
+
+Raw writable pointers must participate in the same conflict checks. When
+the exporter can observe both acquisition and release of write access,
+record that entire interval.
+
+If release cannot be observed, granting the pointer must atomically reject
+an active stable export or permanently disable stable acquisitions for that
+storage before returning the pointer. All aliases must share that permanent
+state. Subsequent stable requests raise plain :exc:`BufferError` before
+checking for temporary conflicts.
+
+A type that allows writable pointers to escape without observing their
+acquisition cannot declare stable-read support.
 
 
 .. _async-structs:

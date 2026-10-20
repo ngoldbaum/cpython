@@ -1914,6 +1914,12 @@ Buffer flags
 
    .. versionadded:: 3.12
 
+   .. attribute:: BufferFlags.STABLE_READ
+
+      Request a stable, read-only buffer. See :c:macro:`PyBUF_STABLE_READ`.
+
+      .. versionadded:: 3.16
+
 .. _inspect-module-cli:
 
 Command-line interface

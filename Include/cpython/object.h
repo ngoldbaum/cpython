@@ -248,6 +248,9 @@ struct _typeobject {
     _Py_iteritemfunc _tp_iteritem;
 
     void *_tp_cache;
+
+    /* Exact-type buffer capabilities. Not inherited; accessed atomically. */
+    uint64_t _tp_buffer_capabilities;
 };
 
 #define _Py_ATTR_CACHE_UNUSED (30000)  // (see tp_versions_used)
@@ -403,6 +406,9 @@ PyAPI_FUNC(int) PyType_Unwatch(int watcher_id, PyObject *type);
  * assigned, or 0 if a new tag could not be assigned.
  */
 PyAPI_FUNC(int) PyUnstable_Type_AssignVersionTag(PyTypeObject *type);
+
+PyAPI_FUNC(int) PyUnstable_Type_RegisterBufferCapabilities(
+    PyTypeObject *type, uint64_t capabilities);
 
 
 typedef enum {

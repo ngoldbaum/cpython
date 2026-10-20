@@ -31,6 +31,90 @@
 
 #include <stddef.h>               // ptrdiff_t
 
+static int slot_bf_getbuffer(PyObject *, Py_buffer *, int);
+
+/* Return the buffer capabilities registered for this type, without looking
+ * at its base classes. Read the field atomically even in GIL-enabled builds,
+ * since static types can be shared by interpreters with separate GILs.
+ * The caller must keep the type alive. */
+uint64_t
+_PyType_GetBufferCapabilities(PyTypeObject *type)
+{
+    return _Py_atomic_load_uint64_acquire(&type->_tp_buffer_capabilities);
+}
+
+static int
+type_check_buffer_capabilities(PyTypeObject *type)
+{
+    if (!(type->tp_flags & Py_TPFLAGS_IMMUTABLETYPE)
+        || Py_TYPE(type) != &PyType_Type)
+    {
+        PyErr_SetString(PyExc_TypeError,
+                        "buffer capabilities require an immutable type "
+                        "with metaclass type");
+        return -1;
+    }
+    /* Even immutable module subtypes allow __class__ assignment, which can
+     * change the release callback while a stable export is active. */
+    if (PyType_IsSubtype(type, &PyModule_Type)) {
+        PyErr_SetString(PyExc_TypeError,
+                        "module types cannot declare buffer capabilities");
+        return -1;
+    }
+    assert(type->tp_mro != NULL);
+    PyObject *mro = type->tp_mro;
+    for (Py_ssize_t i = 0; i < PyTuple_GET_SIZE(mro); i++) {
+        PyTypeObject *base = (PyTypeObject *)PyTuple_GET_ITEM(mro, i);
+        if (!(base->tp_flags & Py_TPFLAGS_IMMUTABLETYPE)) {
+            PyErr_SetString(PyExc_TypeError,
+                            "buffer capabilities require an immutable MRO");
+            return -1;
+        }
+    }
+    PyBufferProcs *buffer = type->tp_as_buffer;
+    if (buffer == NULL || buffer->bf_getbuffer == NULL
+        || buffer->bf_getbuffer == slot_bf_getbuffer)
+    {
+        PyErr_SetString(PyExc_TypeError,
+                        "buffer capabilities require a native bf_getbuffer");
+        return -1;
+    }
+
+    return 0;
+}
+
+int
+PyUnstable_Type_RegisterBufferCapabilities(PyTypeObject *type,
+                                          uint64_t capabilities)
+{
+    if (capabilities != PyBUF_STABLE_READ) {
+        PyErr_SetString(PyExc_ValueError, "unsupported buffer capabilities");
+        return -1;
+    }
+    if (_PyType_GetBufferCapabilities(type) == capabilities) {
+        return 0;
+    }
+    if (!(type->tp_flags & Py_TPFLAGS_READY) || type->tp_mro == NULL) {
+        PyErr_SetString(PyExc_TypeError,
+                        "buffer capabilities require a ready type");
+        return -1;
+    }
+    if (type_check_buffer_capabilities(type) < 0) {
+        return -1;
+    }
+
+    uint64_t expected = 0;
+    if (!_Py_atomic_compare_exchange_uint64(&type->_tp_buffer_capabilities,
+                                           &expected, capabilities)
+        && expected != capabilities)
+    {
+        PyErr_SetString(PyExc_ValueError,
+                        "buffer capabilities cannot be changed");
+        return -1;
+    }
+    return 0;
+}
+
 /*[clinic input]
 class type "PyTypeObject *" "&PyType_Type"
 class object "PyObject *" "&PyBaseObject_Type"
@@ -5358,6 +5442,19 @@ type_from_slots_or_spec(
             NO_SPEC;
             flags = (int)it.current.sl_uint64;
             break;
+        case Py_tp_buffer_capabilities:
+            NO_SPEC;
+            if (it.state->slot_struct_kind != _PySlot_KIND_SLOT) {
+                PyErr_SetString(PyExc_SystemError,
+                                "Py_tp_buffer_capabilities requires PySlot");
+                goto finally;
+            }
+            if (it.current.sl_uint64 != PyBUF_STABLE_READ) {
+                PyErr_SetString(PyExc_ValueError,
+                                "unsupported buffer capabilities");
+                goto finally;
+            }
+            break;
         case Py_tp_members:
             for (const PyMemberDef *memb = it.current.sl_ptr;
                  memb->name != NULL;
@@ -5662,6 +5759,10 @@ type_from_slots_or_spec(
         case Py_tp_bases:
         case Py_tp_doc:
             /* Processed above */
+            break;
+        case Py_tp_buffer_capabilities:
+            _Py_atomic_store_uint64_relaxed(&type->_tp_buffer_capabilities,
+                                            it.current.sl_uint64);
             break;
         case Py_tp_members:
             {
@@ -9421,6 +9522,11 @@ type_ready_post_checks(PyTypeObject *type)
                          type->tp_name);
             return -1;
         }
+    }
+    if (_PyType_GetBufferCapabilities(type) != 0
+        && type_check_buffer_capabilities(type) < 0)
+    {
+        return -1;
     }
     return 0;
 }

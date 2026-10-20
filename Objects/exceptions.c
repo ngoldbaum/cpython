@@ -4290,6 +4290,9 @@ PyObject *PyExc_MemoryError = (PyObject *) &_PyExc_MemoryError;
  */
 SimpleExtendsException(PyExc_Exception, BufferError, "Buffer error.");
 
+SimpleExtendsException(PyExc_BufferError, BufferConflictError,
+                      "An incompatible access to a buffer is active.");
+
 
 /* Warning category docstrings */
 
@@ -4472,6 +4475,9 @@ static struct static_exception static_exceptions[] = {
     ITEM(TypeError),
     ITEM(ValueError),
     ITEM(Warning),
+
+    // Level 4: BufferError(Exception) subclasses
+    ITEM(BufferConflictError),
 
     // Level 4: ArithmeticError(Exception) subclasses
     ITEM(FloatingPointError),

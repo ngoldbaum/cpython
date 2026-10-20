@@ -1202,6 +1202,13 @@ New features
   API.
   (Contributed by Nathan Goldbaum and Victor Stinner in :gh:`158842`.)
 
+* Add :c:macro:`PyBUF_STABLE_READ` and :exc:`BufferConflictError` for
+  requesting stable, read-only buffers. Types declare support with
+  :c:macro:`Py_tp_buffer_capabilities` or
+  :c:func:`PyUnstable_Type_RegisterBufferCapabilities`. The flag,
+  exception, and type slot are part of the Limited API and Stable ABI
+  starting with 3.16; the registration function remains Unstable.
+
 Porting to Python 3.16
 ----------------------
 

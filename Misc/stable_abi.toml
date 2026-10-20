@@ -2,8 +2,8 @@
 # Please append new items at the end.
 
 # The syntax of this file is not fixed.
-# It is designed to be read only by Tools/build/stable_abi.py, which can change
-# without notice.
+# It is read by Tools/build/stable_abi.py and Tools/build/generate_slots.py,
+# which can change without notice.
 
 # For the history of the stable ABI prior to this file,
 # see the history of PC/python3dll.c and before that, PC/python3.def,
@@ -2914,4 +2914,11 @@
 [macro.Py_SETREF]
     added = '3.16'
 [macro.Py_XSETREF]
+    added = '3.16'
+
+[const.PyBUF_STABLE_READ]
+    added = '3.16'
+[data.PyExc_BufferConflictError]
+    added = '3.16'
+[const.Py_tp_buffer_capabilities]
     added = '3.16'

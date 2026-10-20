@@ -253,6 +253,7 @@ SYMBOL_NAMES = (
     "PyExc_BaseExceptionGroup",
     "PyExc_BlockingIOError",
     "PyExc_BrokenPipeError",
+    "PyExc_BufferConflictError",
     "PyExc_BufferError",
     "PyExc_BytesWarning",
     "PyExc_ChildProcessError",

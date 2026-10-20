@@ -1921,7 +1921,7 @@ class SizeofTest(unittest.TestCase):
         check((1,2,3), vsize('') + self.P + 3*self.P)
         # type
         # static type: PyTypeObject
-        fmt = 'P2nPI13Pl4Pn9Pn12PI2PcP'
+        fmt = 'P2nPI13Pl4Pn9Pn12PI2PcPQ'
         s = vsize(fmt)
         check(int, s)
         typeid = 'n' if support.Py_GIL_DISABLED else ''
@@ -1935,6 +1935,7 @@ class SizeofTest(unittest.TestCase):
                   '7P'
                   '1PIP'                # Specializer cache
                   + typeid              # heap type id (free-threaded only)
+                  + '0Q'                # alignment of buffer capabilities
                   )
         class newstyleclass(object): pass
         # Separate block for PyDictKeysObject with 8 keys and 5 entries

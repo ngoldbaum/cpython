@@ -771,6 +771,7 @@ class CompatPickleTests(unittest.TestCase):
         for name, exc in get_exceptions(builtins):
             with self.subTest(name):
                 if exc in (BlockingIOError,
+                           BufferConflictError,
                            ResourceWarning,
                            StopAsyncIteration,
                            PythonFinalizationError,

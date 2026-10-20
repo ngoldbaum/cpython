@@ -43,6 +43,8 @@ extern void _PyTypes_FiniExtTypes(PyInterpreterState *interp);
 extern void _PyTypes_Fini(PyInterpreterState *);
 extern void _PyTypes_FiniCachedDescriptors(PyInterpreterState *);
 
+extern uint64_t _PyType_GetBufferCapabilities(PyTypeObject *type);
+
 static inline PyObject **
 _PyStaticType_GET_WEAKREFS_LISTPTR(managed_static_type_state *state)
 {

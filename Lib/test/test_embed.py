@@ -494,6 +494,18 @@ class EmbeddingTests(EmbeddingTestsMixin, unittest.TestCase):
         out, err = self.run_embedded_interpreter("test_repeated_simple_init")
         self.assertEqual(out, 'Finalized\n' * INIT_LOOPS)
 
+    def test_repeated_buffer_capabilities(self):
+        code = textwrap.dedent('''
+            import _testcapi as capi
+            for cls in (capi.StaticStableBuffer,
+                        capi.make_stable_buffer_type(0x400)):
+                capi.register_buffer_capabilities(cls, 0x400)
+                assert capi.get_buffer_bytes(cls(), 0x400) == b'stable'
+            print('ok')
+        ''')
+        out, err = self.run_embedded_interpreter('test_repeated_init_exec', code)
+        self.assertEqual(out, 'ok\n' * INIT_LOOPS)
+
     @support.requires_specialization
     @unittest.skipUnless(support.TEST_MODULES_ENABLED, "requires test modules")
     def test_specialized_static_code_gets_unspecialized_at_Py_FINALIZE(self):

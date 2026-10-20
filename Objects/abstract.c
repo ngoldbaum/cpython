@@ -14,6 +14,7 @@
 #include "pycore_pyerrors.h"      // _PyErr_Occurred()
 #include "pycore_pystate.h"       // _PyThreadState_GET()
 #include "pycore_tuple.h"         // _PyTuple_FromArraySteal()
+#include "pycore_typeobject.h"    // _PyType_GetBufferCapabilities()
 #include "pycore_unionobject.h"   // _PyUnion_Check()
 
 #include <stddef.h>               // offsetof()
@@ -437,8 +438,82 @@ PyObject_AsWriteBuffer(PyObject *obj,
 /* Buffer C-API for Python 3.0 */
 
 int
+_PyObject_GetStableBuffer(PyObject *obj, Py_buffer *view, int flags,
+                          getbufferproc callback)
+{
+    assert(flags & PyBUF_STABLE_READ);
+    if (view == NULL) {
+        PyErr_BadInternalCall();
+        return -1;
+    }
+    memset(view, 0, sizeof(*view));
+    switch (flags & ~PyBUF_STABLE_READ) {
+        case PyBUF_SIMPLE:
+        case PyBUF_ND:
+        case PyBUF_ND | PyBUF_FORMAT:
+        case PyBUF_STRIDES:
+        case PyBUF_STRIDES | PyBUF_FORMAT:
+        case PyBUF_C_CONTIGUOUS:
+        case PyBUF_C_CONTIGUOUS | PyBUF_FORMAT:
+        case PyBUF_F_CONTIGUOUS:
+        case PyBUF_F_CONTIGUOUS | PyBUF_FORMAT:
+        case PyBUF_ANY_CONTIGUOUS:
+        case PyBUF_ANY_CONTIGUOUS | PyBUF_FORMAT:
+        case PyBUF_INDIRECT:
+        case PyBUF_INDIRECT | PyBUF_FORMAT:
+            break;
+        default:
+            PyErr_SetString(PyExc_ValueError, "invalid stable buffer request");
+            return -1;
+    }
+
+    PyTypeObject *type = Py_TYPE(obj);
+    PyBufferProcs *buffer = type->tp_as_buffer;
+    if (buffer == NULL || buffer->bf_getbuffer == NULL) {
+        PyErr_Format(PyExc_TypeError,
+                     "a bytes-like object is required, not '%.100s'",
+                     type->tp_name);
+        return -1;
+    }
+    if (!(_PyType_GetBufferCapabilities(type) & PyBUF_STABLE_READ)) {
+        PyErr_SetString(PyExc_BufferError,
+                        "exporter has not declared stable buffer support");
+        return -1;
+    }
+    if (callback != NULL && callback != buffer->bf_getbuffer) {
+        PyErr_SetString(PyExc_BufferError,
+                        "buffer callback does not match the declared callback");
+        return -1;
+    }
+
+    int res = buffer->bf_getbuffer(obj, view, flags);
+    assert(_Py_CheckSlotResult(obj, "getbuffer", res >= 0));
+    if (res < 0) {
+        return res;
+    }
+    if (view->obj != obj || view->readonly != 1) {
+        /* A malformed successful export still owns resources. A non-NULL
+         * owner must be a valid owned reference with releasable export state. */
+        if (view->obj != NULL) {
+            PyBuffer_Release(view);
+        }
+        else if (buffer->bf_releasebuffer != NULL) {
+            buffer->bf_releasebuffer(obj, view);
+        }
+        memset(view, 0, sizeof(*view));
+        PyErr_SetString(PyExc_SystemError,
+                        "stable buffer must be read-only and owned by the exporter");
+        return -1;
+    }
+    return res;
+}
+
+int
 PyObject_GetBuffer(PyObject *obj, Py_buffer *view, int flags)
 {
+    if (flags & PyBUF_STABLE_READ) {
+        return _PyObject_GetStableBuffer(obj, view, flags, NULL);
+    }
     if (flags != PyBUF_SIMPLE) {  /* fast path */
         if (flags == PyBUF_READ || flags == PyBUF_WRITE) {
             PyErr_BadInternalCall();

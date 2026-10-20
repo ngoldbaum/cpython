@@ -1150,6 +1150,11 @@ Exception types
      * :exc:`BrokenPipeError`
    * * .. c:var:: PyObject *PyExc_BufferError
      * :exc:`BufferError`
+   * * .. c:var:: PyObject *PyExc_BufferConflictError
+
+          .. versionadded:: 3.16
+
+     * :exc:`BufferConflictError`
    * * .. c:var:: PyObject *PyExc_ChildProcessError
      * :exc:`ChildProcessError`
    * * .. c:var:: PyObject *PyExc_ConnectionAbortedError

@@ -116,6 +116,9 @@
 #define Py_tp_module 108
 #define Py_mod_abi 109
 #define Py_mod_token 110
+#if !defined(Py_LIMITED_API) || Py_LIMITED_API+0 >= _Py_PACK_VERSION(3, 16)
+#define Py_tp_buffer_capabilities 111
+#endif
 
-#define _Py_slot_COUNT 111
+#define _Py_slot_COUNT 112
 #endif /* _PY_HAVE_SLOTS_GENERATED_H */

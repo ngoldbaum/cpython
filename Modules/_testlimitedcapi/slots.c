@@ -3,6 +3,17 @@
 
 #include "parts.h"
 
+/* These names are only available starting with Limited API 3.16. */
+#ifdef PyBUF_STABLE_READ
+#  error "PyBUF_STABLE_READ must not be exposed to Limited API 3.15"
+#endif
+#ifdef Py_tp_buffer_capabilities
+#  error "Py_tp_buffer_capabilities must not be exposed to Limited API 3.15"
+#endif
+/* A variable declaration cannot be checked with #ifdef. This declaration
+ * conflicts with the public declaration if it is exposed here. */
+static int PyExc_BufferConflictError;
+
 PyABIInfo_VAR(abi_info);
 
 /* Define a bunch of (mostly nonsensical) functions to put in slots, so
@@ -665,6 +676,7 @@ static PyMethodDef *TestMethods = _TestMethods;
 int
 _PyTestLimitedCAPI_Init_Slots(PyObject *m)
 {
+    assert(PyExc_BufferConflictError == 0);
     if (PyModule_AddFunctions(m, TestMethods) < 0) {
         return -1;
     }
