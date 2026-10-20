@@ -1,4 +1,5 @@
 import gc
+import io
 import pickle
 import unittest
 import weakref
@@ -312,6 +313,144 @@ for cls in (capi.StaticStableBuffer, capi.make_stable_buffer_type(0x400)):
 
         threading_helper.run_concurrently(declare_and_read, nthreads=4)
         self.assertEqual((obj.acquisitions, obj.releases), (400, 400))
+
+
+class StableBytesTests(unittest.TestCase):
+    def test_acquisition(self):
+        for data in (b'', b'a', b'st\0able', bytes(range(256)) * 32):
+            for cached_hash in (False, True):
+                if cached_hash:
+                    hash(data)
+                for flags in (STABLE, STABLE | F.CONTIG_RO,
+                              STABLE | F.FULL_RO):
+                    with self.subTest(data=data[:8], cached_hash=cached_hash,
+                                      flags=flags):
+                        self.assertEqual(acquire(data, flags), data)
+                self.assertEqual(
+                    _testlimitedcapi.get_stable_buffer_bytes(data), data)
+                self.assertEqual(_testcapi.bytes_stable_read(data, True), data)
+
+    def test_buffer_wrapper(self):
+        data = bytes(range(256))
+        with data.__buffer__(STABLE | F.FULL_RO) as view:
+            self.assertIs(view.obj, data)
+            self.assertTrue(view.readonly)
+            self.assertEqual(view.format, 'B')
+            self.assertEqual(view.shape, (len(data),))
+            self.assertEqual(view.strides, (1,))
+            self.assertEqual(view.tobytes(), data)
+
+    def test_subclass_not_declared(self):
+        class BytesSubclass(bytes):
+            pass
+
+        obj = BytesSubclass(b'data')
+        self.assertEqual(acquire(obj, F.SIMPLE), b'data')
+        with self.assertRaises(BufferError):
+            acquire(obj, STABLE)
+        with self.assertRaises(BufferError):
+            obj.__buffer__(STABLE)
+
+    def test_resize(self):
+        original = b'st\0able'
+        for size in (0, 1, len(original), len(original) + 4):
+            for cached_hash in (False, True):
+                with self.subTest(size=size, cached_hash=cached_hash):
+                    result = _testcapi.bytes_stable_resize(size, cached_hash)
+                    expected = original[:size] + b'x' * max(
+                        0, size - len(original))
+                    self.assertEqual(result, expected)
+
+    def test_concat(self):
+        for concat in (_testlimitedcapi.bytes_concat,
+                       _testlimitedcapi.bytes_concatanddel):
+            data = bytes(range(256))
+            with data.__buffer__(STABLE) as view:
+                del data
+                self.assertEqual(concat(view.obj, b'!'), bytes(range(256)) + b'!')
+                self.assertEqual(view.tobytes(), bytes(range(256)))
+
+    def test_bytesio_shared_storage(self):
+        original = bytes(range(256))
+        for method in ('getvalue', 'read', 'peek'):
+            for operation in ('write', 'grow', 'truncate', 'getbuffer',
+                              'reinitialize', 'close'):
+                with self.subTest(method=method, operation=operation):
+                    stream = io.BytesIO()
+                    stream.write(original)
+                    stream.seek(0)
+                    data = getattr(stream, method)()
+                    with data.__buffer__(STABLE) as view:
+                        del data
+                        if operation == 'write':
+                            stream.seek(0)
+                            stream.write(b'changed')
+                        elif operation == 'grow':
+                            stream.seek(0, io.SEEK_END)
+                            stream.write(b'changed')
+                        elif operation == 'truncate':
+                            stream.truncate(1)
+                        elif operation == 'getbuffer':
+                            with stream.getbuffer() as writable:
+                                writable[0] = 42
+                        elif operation == 'reinitialize':
+                            stream.__init__(b'changed')
+                        else:
+                            stream.close()
+                        self.assertEqual(view.tobytes(), original)
+                    stream.close()
+
+    def test_bytearray_take_bytes(self):
+        for count in (1, 4, 8):
+            with self.subTest(count=count):
+                source = bytearray(b'abcdefgh')
+                data = source.take_bytes(count)
+                with data.__buffer__(STABLE) as view:
+                    del data
+                    source[:] = b'changed'
+                    self.assertEqual(view.tobytes(), b'abcdefgh'[:count])
+
+    def test_subinterpreters(self):
+        for _ in range(2):
+            self.assertEqual(support.run_in_subinterp('''
+import _testcapi
+assert _testcapi.get_buffer_bytes(b'data', 0x400) == b'data'
+'''), 0)
+
+    @threading_helper.requires_working_threading()
+    def test_concurrent_bytesio_writes(self):
+        original = bytes(range(256)) * 32
+        with io.BytesIO() as stream:
+            stream.write(original)
+            data = stream.getvalue()
+            with data.__buffer__(STABLE) as view:
+                del data
+
+                def read():
+                    for _ in range(100):
+                        # This helper reads the bytes with the GIL released.
+                        self.assertEqual(
+                            _testcapi.bytes_stable_read(view.obj), original)
+
+                def write():
+                    replacement = b'x' * len(original)
+                    for _ in range(100):
+                        stream.seek(0)
+                        stream.write(replacement)
+
+                threading_helper.run_concurrently([read, write])
+                self.assertEqual(view.tobytes(), original)
+
+    @threading_helper.requires_working_threading()
+    def test_concurrent_reads(self):
+        data = bytes(range(256)) * 32
+
+        def read():
+            for _ in range(100):
+                self.assertEqual(acquire(data, STABLE), data)
+                self.assertEqual(_testcapi.bytes_stable_read(data), data)
+
+        threading_helper.run_concurrently(read, nthreads=4)
 
 
 if __name__ == '__main__':

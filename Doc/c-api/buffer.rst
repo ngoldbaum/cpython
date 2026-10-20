@@ -385,6 +385,9 @@ The base request must be :c:macro:`PyBUF_SIMPLE`, :c:macro:`PyBUF_ND`,
 with :c:macro:`PyBUF_SIMPLE`. Read-only compound requests are accepted
 when their numeric values match these combinations.
 
+Exact :class:`bytes` objects support stable reads without copying their data.
+Subclasses must declare support separately.
+
 For exporter requirements, see :ref:`buffer-stable-exporters`.
 
 Errors and limitations

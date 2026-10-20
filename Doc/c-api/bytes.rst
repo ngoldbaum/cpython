@@ -29,6 +29,20 @@ called with a non-bytes parameter.
    is the same object as :class:`bytes` in the Python layer.
 
 
+Bytes must not be modified while they are shared with other code.
+Construction APIs such as :c:func:`PyBytes_FromStringAndSize` with a ``NULL``
+source allow C code to fill private storage before sharing the result.
+Retaining a construction pointer does not permit later writes to shared
+bytes. :c:type:`PyBytesWriter` keeps construction separate from the completed
+bytes object.
+
+Exact :class:`bytes` objects support :ref:`stable buffer reads
+<buffer-stable-reads>` without copying. Finish construction before acquiring
+a stable export, and do not modify its storage until the export is released.
+Resizing or concatenating bytes can create a replacement object while the
+export retains the original storage unchanged.
+
+
 .. c:function:: int PyBytes_Check(PyObject *o)
 
    Return true if the object *o* is a bytes object or an instance of a subtype
@@ -236,21 +250,22 @@ called with a non-bytes parameter.
 .. c:function:: int _PyBytes_Resize(PyObject **bytes, Py_ssize_t newsize)
 
    Resize a bytes object. *newsize* will be the new length of the bytes object.
-   You can think of it as creating a new bytes object and destroying the old
-   one, only more efficiently.
+   This can reuse privately owned storage or create a replacement object,
+   preserving the original object for any existing references.
 
    Pass the address of an
    existing bytes object as an lvalue (it may be written into), and the new size
    desired.  On success, *\*bytes* holds the resized bytes object and ``0`` is
    returned; the address in *\*bytes* may differ from its input value.  If the
-   reallocation fails, the original bytes object at *\*bytes* is deallocated,
-   *\*bytes* is set to ``NULL``, :exc:`MemoryError` is set, and ``-1`` is
-   returned.
+   reallocation fails, the reference to the original object at *\*bytes* is
+   released, *\*bytes* is set to ``NULL``, :exc:`MemoryError` is set, and ``-1``
+   is returned.
 
-   While bytes objects are usually immutable in Python, this special C API
-   allows mutating a bytes object in-place. The returned bytes object can still
-   be mutated using :c:func:`PyBytes_AsString`; except if *newsize* is
-   zero in which case it returns the immutable empty bytes string.
+   When the size changes and *newsize* is nonzero, the returned object can
+   be filled using :c:func:`PyBytes_AsString` before sharing it. A same-size
+   request can return the original object unchanged, even if it is shared or
+   has a cached hash; success does not make such an object writable. If
+   *newsize* is zero, the result is the immutable empty bytes object.
 
    .. soft-deprecated:: 3.15
       Use the :c:type:`PyBytesWriter` API instead.

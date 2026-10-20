@@ -61,6 +61,96 @@ bytes_resize(PyObject *Py_UNUSED(module), PyObject *args, PyObject *kwargs)
 }
 
 
+/* Optionally copy first so only the export keeps the source alive. */
+static PyObject *
+bytes_stable_read(PyObject *Py_UNUSED(module), PyObject *args)
+{
+    PyObject *arg;
+    int new = 0;
+    if (!PyArg_ParseTuple(args, "O!|p", &PyBytes_Type, &arg, &new)) {
+        return NULL;
+    }
+    PyObject *obj;
+    if (new) {
+        obj = PyBytes_FromStringAndSize(PyBytes_AS_STRING(arg),
+                                       PyBytes_GET_SIZE(arg));
+    }
+    else {
+        obj = Py_NewRef(arg);
+    }
+    if (obj == NULL) {
+        return NULL;
+    }
+    Py_buffer view;
+    if (PyObject_GetBuffer(obj, &view, PyBUF_FULL_RO | PyBUF_STABLE_READ) < 0) {
+        Py_DECREF(obj);
+        return NULL;
+    }
+    assert(view.obj == obj);
+    assert(view.buf == PyBytes_AS_STRING(obj));
+    assert(view.len == PyBytes_GET_SIZE(obj));
+    assert(view.readonly == 1);
+    assert(view.itemsize == 1);
+    assert(view.ndim == 1);
+    assert(strcmp(view.format, "B") == 0);
+    assert(view.shape[0] == view.len);
+    assert(view.strides[0] == 1);
+    assert(view.suboffsets == NULL);
+    Py_DECREF(obj);
+
+    PyObject *result = PyBytes_FromStringAndSize(NULL, view.len);
+    if (result != NULL) {
+        char *dest = PyBytes_AS_STRING(result);
+        Py_BEGIN_ALLOW_THREADS
+        memcpy(dest, view.buf, view.len);
+        Py_END_ALLOW_THREADS
+    }
+    PyBuffer_Release(&view);
+    return result;
+}
+
+/* The export is the only reference besides the one passed to resize. */
+static PyObject *
+bytes_stable_resize(PyObject *Py_UNUSED(module), PyObject *args)
+{
+    Py_ssize_t newsize;
+    int compute_hash;
+    if (!PyArg_ParseTuple(args, "np", &newsize, &compute_hash)) {
+        return NULL;
+    }
+    const char data[] = "st\0able";
+    PyObject *obj = PyBytes_FromStringAndSize(NULL, sizeof(data) - 1);
+    if (obj == NULL) {
+        return NULL;
+    }
+    memcpy(PyBytes_AS_STRING(obj), data, sizeof(data) - 1);
+    if (compute_hash && PyObject_Hash(obj) == -1) {
+        Py_DECREF(obj);
+        return NULL;
+    }
+    Py_buffer view;
+    if (PyObject_GetBuffer(obj, &view, PyBUF_STABLE_READ) < 0) {
+        Py_DECREF(obj);
+        return NULL;
+    }
+    if (_PyBytes_Resize(&obj, newsize) < 0) {
+        PyBuffer_Release(&view);
+        return NULL;
+    }
+    assert(view.len == sizeof(data) - 1);
+    assert(PyBytes_GET_SIZE(view.obj) == view.len);
+    assert(view.buf == PyBytes_AS_STRING(view.obj));
+    assert((obj == view.obj) == (newsize == view.len));
+    if (newsize > view.len) {
+        // Initialize the new part before returning the replacement.
+        memset(PyBytes_AS_STRING(obj) + view.len, 'x', newsize - view.len);
+    }
+    assert(memcmp(view.buf, data, view.len) == 0);
+    PyBuffer_Release(&view);
+    return obj;
+}
+
+
 /* Test PyBytes_Join() */
 static PyObject *
 bytes_join(PyObject *Py_UNUSED(module), PyObject *args)
@@ -623,6 +713,8 @@ corrupt_bytes(PyObject *Py_UNUSED(module), PyObject *args)
 static PyMethodDef test_methods[] = {
     {"bytes_resize", _PyCFunction_CAST(bytes_resize), METH_VARARGS | METH_KEYWORDS},
     {"bytes_join", bytes_join, METH_VARARGS},
+    {"bytes_stable_read", bytes_stable_read, METH_VARARGS},
+    {"bytes_stable_resize", bytes_stable_resize, METH_VARARGS},
     {"byteswriter_abc", byteswriter_abc, METH_NOARGS},
     {"byteswriter_resize", byteswriter_resize, METH_NOARGS},
     {"byteswriter_highlevel", byteswriter_highlevel, METH_NOARGS},

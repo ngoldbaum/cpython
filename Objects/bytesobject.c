@@ -3323,6 +3323,7 @@ PyTypeObject PyBytes_Type = {
     .tp_vectorcall = bytes_vectorcall,
     .tp_version_tag = _Py_TYPE_VERSION_BYTES,
     ._tp_iteritem = bytes_iteritem,
+    ._tp_buffer_capabilities = PyBUF_STABLE_READ,
 };
 
 void
