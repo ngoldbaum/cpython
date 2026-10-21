@@ -386,7 +386,9 @@ with :c:macro:`PyBUF_SIMPLE`. Read-only compound requests are accepted
 when their numeric values match these combinations.
 
 Exact :class:`bytes` objects support stable reads without copying their data.
-Subclasses must declare support separately.
+Subclasses must declare support separately. A :class:`memoryview` supports
+stable requests only when it retains an existing stable acquisition; an
+ordinary view cannot be upgraded by requesting :c:macro:`PyBUF_STABLE_READ`.
 
 For exporter requirements, see :ref:`buffer-stable-exporters`.
 

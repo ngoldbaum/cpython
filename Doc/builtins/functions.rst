@@ -1365,7 +1365,7 @@ are always available.  They are listed here in alphabetical order.
 
 
 .. _func-memoryview:
-.. class:: memoryview(object)
+.. class:: memoryview(object, *, access=None)
    :noindex:
 
    Return a "memory view" object created from the given argument.  See

@@ -240,8 +240,8 @@ class StableBufferTests(unittest.TestCase):
         self.assertEqual(obj.acquisitions, 0)
 
     def test_memoryview_fast_path_checked(self):
-        # Memoryview support is a separate change; an ordinary view must not
-        # bypass declaration checks by sharing its existing managed buffer.
+        # An ordinary view must not gain a stable guarantee by sharing its
+        # existing managed buffer, even when its exporter supports stable reads.
         with memoryview(b'data') as view:
             with self.assertRaises(BufferError):
                 memoryview._from_flags(view, STABLE | F.FULL_RO)
@@ -455,3 +455,251 @@ assert _testcapi.get_buffer_bytes(b'data', 0x400) == b'data'
 
 if __name__ == '__main__':
     unittest.main()
+class StableMemoryviewTests(unittest.TestCase):
+    def test_constructor(self):
+        for data in (b'', b'a', bytes(range(256))):
+            with self.subTest(data=data):
+                with memoryview(data, access='stable-read') as view:
+                    self.assertIs(view.obj, data)
+                    self.assertTrue(view.readonly)
+                    self.assertEqual(view.tobytes(), data)
+                    self.assertEqual(acquire(view, STABLE), data)
+                    self.assertEqual(_testcapi.buffer_pointer_as_int(view),
+                                     _testcapi.buffer_pointer_as_int(data))
+        with self.assertRaises(BufferError):
+            memoryview(bytearray(b'data'), access='stable-read')
+        with self.assertRaises(TypeError):
+            memoryview(object(), access='stable-read')
+
+    def test_access_argument(self):
+        for value in ('', 'read', 'STABLE-READ', 'stable-read\0'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                memoryview(b'data', access=value)
+        for value in (False, 1, b'stable-read', object()):
+            with self.subTest(value=value), self.assertRaises(TypeError):
+                memoryview(b'data', access=value)
+        with self.assertRaises(TypeError):
+            memoryview(b'data', 'stable-read')
+        with memoryview(object=b'data', access=None) as view:
+            with self.assertRaises(BufferError):
+                acquire(view, STABLE)
+        class Access(str):
+            def __eq__(self, other):
+                raise AssertionError('must not call Python comparison')
+        with memoryview(b'data', access=Access('stable-read')) as view:
+            self.assertEqual(acquire(view, STABLE), b'data')
+
+    def test_no_upgrade(self):
+        for data in (b'data', bytearray(b'data')):
+            with memoryview(data) as ordinary:
+                views = [ordinary, ordinary[:], ordinary.cast('B'),
+                         ordinary.toreadonly(), memoryview(ordinary)]
+                for view in views:
+                    with view, self.subTest(data=type(data), view=view):
+                        with self.assertRaises(BufferError) as cm:
+                            memoryview(view, access='stable-read')
+                        self.assertIs(type(cm.exception), BufferError)
+                        with self.assertRaises(BufferError):
+                            acquire(view, STABLE)
+                        with self.assertRaises(BufferError):
+                            view.__buffer__(STABLE | F.FULL_RO)
+
+    def test_shared_acquisition(self):
+        for derive in (memoryview,
+                       lambda v: memoryview(v, access='stable-read'),
+                       lambda v: v[1:], lambda v: v.cast('H'),
+                       lambda v: v.cast('B', shape=(2, 3)),
+                       lambda v: v.toreadonly()):
+            with self.subTest(derive=derive):
+                obj = make_type(STABLE)()
+                source = memoryview(obj, access='stable-read')
+                child = derive(source)
+                expected = child.tobytes()
+                self.assertIs(child.obj, obj)
+                self.assertTrue(child.readonly)
+                source.release()
+                self.assertEqual((obj.acquisitions, obj.releases), (1, 0))
+                self.assertEqual(acquire(child, STABLE | F.FULL_RO), expected)
+                self.assertEqual(acquire(child, F.FULL_RO), expected)
+                self.assertEqual(_testlimitedcapi.get_stable_buffer_bytes(child),
+                                 expected)
+                with self.assertRaises(TypeError):
+                    child[0] = 0
+                for flags in (F.WRITABLE, F.FULL):
+                    with self.assertRaises(BufferError):
+                        acquire(child, flags)
+                    with self.assertRaises(BufferError):
+                        memoryview._from_flags(child, flags)
+                with self.assertRaises(ValueError):
+                    acquire(child, STABLE | F.WRITABLE)
+                child.release()
+                self.assertEqual((obj.acquisitions, obj.releases), (1, 1))
+                with self.assertRaises(ValueError):
+                    memoryview(child, access='stable-read')
+                with self.assertRaises(ValueError):
+                    acquire(child, STABLE)
+
+    def test_buffer_wrapper_provenance(self):
+        obj = make_type(STABLE)()
+        source = obj.__buffer__(STABLE | F.FULL_RO)
+        self.assertIs(source.obj, obj)
+        for flags in (F.FULL_RO, STABLE | F.FULL_RO):
+            with source.__buffer__(flags) as exported:
+                # The __buffer__ wrapper owns a C re-export from source.
+                self.assertIs(exported.obj, source)
+                self.assertEqual(acquire(exported, STABLE), b'stable')
+                with self.assertRaises(BufferError):
+                    source.release()
+                self.assertEqual(obj.releases, 0)
+        source.release()
+        self.assertEqual((obj.acquisitions, obj.releases), (1, 1))
+
+    def test_layout(self):
+        from _testbuffer import ndarray
+
+        with memoryview(b'abcdef', access='stable-read') as source:
+            views = [source[::2], source[::-1],
+                     source.cast('B', shape=(2, 3)),
+                     source.cast('B', shape=(2, 3), order='F'),
+                     source[:1].cast('B', shape=())]
+            source.release()
+            for view in views:
+                with view, self.subTest(shape=view.shape, strides=view.strides):
+                    export = ndarray(view, getbuf=STABLE | F.FULL_RO)
+                    self.assertEqual(export.tobytes(), view.tobytes())
+                    self.assertEqual(export.shape, view.shape)
+                    self.assertEqual(export.strides, view.strides)
+                    self.assertEqual(export.format, view.format)
+                    self.assertEqual(export.itemsize, view.itemsize)
+                    self.assertEqual(export.suboffsets, view.suboffsets)
+                    with self.assertRaises(BufferError):
+                        view.release()
+                    del export
+                    for base, contiguous in ((F.C_CONTIGUOUS, view.c_contiguous),
+                                             (F.F_CONTIGUOUS, view.f_contiguous),
+                                             (F.ANY_CONTIGUOUS, view.contiguous)):
+                        if contiguous:
+                            export = ndarray(view, getbuf=STABLE | base | F.FORMAT)
+                            self.assertEqual(export.tobytes(), view.tobytes())
+                            del export
+                        else:
+                            with self.assertRaises(BufferError):
+                                ndarray(view, getbuf=STABLE | base | F.FORMAT)
+
+    def test_c_export_lifetime(self):
+        for fail in (False, True):
+            with self.subTest(fail=fail):
+                obj = make_type(STABLE)()
+                source = memoryview(obj, access='stable-read')
+                child = source[:]
+                def callback():
+                    source.release()
+                    with self.assertRaises(BufferError) as cm:
+                        child.release()
+                    self.assertIs(type(cm.exception), BufferError)
+                    self.assertEqual(obj.releases, 0)
+                    if fail:
+                        raise RuntimeError('callback failed')
+                if fail:
+                    with self.assertRaisesRegex(RuntimeError, 'callback failed'):
+                        _testcapi.stable_buffer_read(child, callback)
+                else:
+                    self.assertEqual(_testcapi.stable_buffer_read(child, callback),
+                                     b'stable')
+                self.assertEqual(obj.releases, 0)
+                child.release()
+                self.assertEqual((obj.acquisitions, obj.releases), (1, 1))
+
+    def test_raw_wrappers_cannot_claim_stability(self):
+        with memoryview(b'data', access='stable-read') as source:
+            for from_buffer in (False, True):
+                with _testcapi.memoryview_from_raw(source, from_buffer) as raw:
+                    self.assertIsNone(raw.obj)
+                    self.assertTrue(raw.readonly)
+                    self.assertEqual(raw.tobytes(), b'data')
+                    with self.assertRaises(BufferError):
+                        acquire(raw, STABLE)
+                    with self.assertRaises(BufferError):
+                        memoryview(raw, access='stable-read')
+
+    @support.thread_unsafe('requires synchronous garbage collection')
+    def test_gc_lifetime(self):
+        obj = make_type(STABLE)()
+        source = memoryview(obj, access='stable-read')
+        child = source[1:]
+        cycle = [source]
+        cycle.append(cycle)
+        ref = weakref.ref(source)
+        del source, cycle
+        support.gc_collect()
+        self.assertIsNone(ref())
+        self.assertEqual(obj.releases, 0)
+        self.assertEqual(acquire(child, STABLE), b'table')
+        cycle = [child]
+        cycle.append(cycle)
+        del child, cycle
+        support.gc_collect()
+        self.assertEqual((obj.acquisitions, obj.releases), (1, 1))
+
+    @threading_helper.requires_working_threading()
+    def test_operation_lifetime(self):
+        from threading import Event, Thread
+
+        obj = make_type(STABLE)()
+        view = memoryview(obj, access='stable-read')
+        started = Event()
+        resume = Event()
+        releases = []
+        class Other:
+            def __buffer__(self, flags):
+                started.set()
+                if not resume.wait(support.SHORT_TIMEOUT):
+                    raise RuntimeError('release thread did not finish')
+                return memoryview(b'stable')
+        def release():
+            try:
+                if started.wait(support.SHORT_TIMEOUT):
+                    with self.assertRaises(BufferError) as cm:
+                        view.release()
+                    self.assertIs(type(cm.exception), BufferError)
+                    releases.append(obj.releases)
+            finally:
+                resume.set()
+        with threading_helper.start_threads([Thread(target=release)]):
+            self.assertTrue(view == Other())
+        self.assertEqual(releases, [0])
+        self.assertEqual(view.tobytes(), b'stable')
+        view.release()
+        self.assertEqual((obj.acquisitions, obj.releases), (1, 1))
+
+    @threading_helper.requires_working_threading()
+    def test_concurrent_derivation_and_release(self):
+        from threading import Barrier
+
+        for derive in (lambda v: memoryview(v, access='stable-read'),
+                       lambda v: v[1:], lambda v: v.cast('H'),
+                       lambda v: v.toreadonly(),
+                       lambda v: v.__buffer__(STABLE | F.FULL_RO)):
+            for _ in range(20):
+                obj = make_type(STABLE)()
+                source = memoryview(obj, access='stable-read')
+                barrier = Barrier(2)
+                def read():
+                    barrier.wait(support.SHORT_TIMEOUT)
+                    try:
+                        child = derive(source)
+                    except ValueError:
+                        return  # Release won the race.
+                    with child:
+                        expected = child.tobytes()
+                        self.assertEqual(_testcapi.stable_buffer_read(child,
+                            lambda: None), expected)
+                def release():
+                    barrier.wait(support.SHORT_TIMEOUT)
+                    try:
+                        source.release()
+                    except BufferError:
+                        pass  # Derivation still holds an operation pin.
+                threading_helper.run_concurrently([read, release])
+                source.release()
+                self.assertEqual((obj.acquisitions, obj.releases), (1, 1))

@@ -24,7 +24,9 @@ any other object.
    Create a memoryview object from an object that provides the buffer interface.
    If *obj* supports writable buffer exports, the memoryview object will be
    read/write, otherwise it may be either read-only or read/write at the
-   discretion of the exporter.
+   discretion of the exporter. This makes an ordinary buffer request, except
+   that construction from a memoryview preserves its existing acquisition,
+   including a stable acquisition.
 
 
 .. c:macro:: PyBUF_READ
@@ -41,6 +43,8 @@ any other object.
 
    Create a memoryview object using *mem* as the underlying buffer.
    *flags* can be one of :c:macro:`PyBUF_READ` or :c:macro:`PyBUF_WRITE`.
+   The resulting view cannot satisfy :c:macro:`PyBUF_STABLE_READ` requests:
+   this function does not acquire an owned stable export.
 
    .. versionadded:: 3.3
 
@@ -48,7 +52,9 @@ any other object.
 
    Create a memoryview object wrapping the given buffer structure *view*.
    For simple byte buffers, :c:func:`PyMemoryView_FromMemory` is the preferred
-   function.
+   function. The resulting view cannot satisfy :c:macro:`PyBUF_STABLE_READ`
+   requests, even if *view* was acquired with that flag: this function does
+   not take ownership of the acquisition.
 
 .. c:function:: PyObject *PyMemoryView_GetContiguous(PyObject *obj, int buffertype, char order)
 

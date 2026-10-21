@@ -4889,11 +4889,30 @@ Memory Views
 of an object that supports the :ref:`buffer protocol <bufferobjects>` without
 copying.
 
-.. class:: memoryview(object)
+.. class:: memoryview(object, *, access=None)
 
    Create a :class:`memoryview` that references *object*.  *object* must
    support the buffer protocol.  Built-in objects that support the buffer
    protocol include :class:`bytes` and :class:`bytearray`.
+
+   With ``access="stable-read"``, the view is read-only and retains a
+   :ref:`stable acquisition <buffer-stable-reads>`: its contents, layout,
+   and backing storage remain unchanged until all dependent views, C buffer
+   exports, and active operations finish using it. Construction from a stable
+   memoryview, slicing, casting, and :meth:`toreadonly` preserve this guarantee.
+   The :attr:`obj` attribute continues to refer to the original exporter.
+
+   With *access* set to ``None`` (the default), construction from an exporter
+   makes an ordinary buffer request; construction from a memoryview preserves
+   its existing acquisition. An ordinary memoryview cannot be upgraded to
+   stable access, even if its exporter supports stable reads or the view is
+   read-only. Such a request raises :exc:`BufferError`.
+
+   Other strings for *access* raise :exc:`ValueError`; other types raise
+   :exc:`TypeError`.
+
+   .. versionchanged:: 3.16
+      Added the *access* parameter.
 
    A :class:`memoryview` has the notion of an *element*, which is the
    atomic memory unit handled by the originating *object*.  For many simple

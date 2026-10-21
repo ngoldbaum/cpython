@@ -1,0 +1,2 @@
+Add ``memoryview(object, access="stable-read")`` and preserve stable buffer
+acquisitions through dependent views and C buffer exports.

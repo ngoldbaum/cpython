@@ -101,6 +101,9 @@ _PyManagedBuffer_FromObject(PyObject *base, int flags)
         return NULL;
     }
 
+    if (flags & PyBUF_STABLE_READ) {
+        mbuf->flags |= _Py_MANAGED_BUFFER_STABLE_READ;
+    }
     return (PyObject *)mbuf;
 }
 
@@ -912,8 +915,19 @@ PyMemoryView_FromObjectAndFlags(PyObject *v, int flags)
 {
     _PyManagedBufferObject *mbuf;
 
-    if (PyMemoryView_Check(v) && !(flags & PyBUF_STABLE_READ)) {
+    if (PyMemoryView_Check(v)) {
         PyMemoryViewObject *mv = (PyMemoryViewObject *)v;
+        if (flags & (PyBUF_STABLE_READ | PyBUF_WRITABLE)) {
+            /* Validate the request and retain the source while registering
+               a view of its existing acquisition. Do not reacquire from obj. */
+            Py_buffer view;
+            if (PyObject_GetBuffer(v, &view, flags) < 0) {
+                return NULL;
+            }
+            PyObject *result = mbuf_add_view(mv->mbuf, &mv->view);
+            PyBuffer_Release(&view);
+            return result;
+        }
         if (memoryview_pin(mv) < 0) {
             return NULL;
         }
@@ -969,6 +983,15 @@ _PyMemoryView_FromBufferProc(PyObject *v, int flags, getbufferproc bufferproc)
         return NULL;
     }
 
+    if ((flags & PyBUF_STABLE_READ) ||
+        (PyMemoryView_Check(v) &&
+         mbuf_has_flag(((PyMemoryViewObject *)v)->mbuf,
+                       _Py_MANAGED_BUFFER_STABLE_READ)))
+    {
+        /* An owned re-export of a stable memoryview also retains the
+           original stable acquisition, even for an ordinary request. */
+        mbuf->flags |= _Py_MANAGED_BUFFER_STABLE_READ;
+    }
     PyObject *ret = mbuf_add_view(mbuf, NULL);
     Py_DECREF(mbuf);
     return ret;
@@ -1133,15 +1156,29 @@ PyMemoryView_GetContiguous(PyObject *obj, int buffertype, char order)
 memoryview.__new__
 
     object: object
+    *
+    access: object = None
 
 Create a new memoryview object which references the given object.
 [clinic start generated code]*/
 
 static PyObject *
-memoryview_impl(PyTypeObject *type, PyObject *object)
-/*[clinic end generated code: output=7de78e184ed66db8 input=f04429eb0bdf8c6e]*/
+memoryview_impl(PyTypeObject *type, PyObject *object, PyObject *access)
+/*[clinic end generated code: output=32a3363bdf7c43f9 input=39481bec4096e53c]*/
 {
-    return PyMemoryView_FromObject(object);
+    int flags = PyBUF_FULL_RO;
+    if (access != Py_None) {
+        if (!PyUnicode_Check(access)) {
+            PyErr_SetString(PyExc_TypeError, "access must be a string or None");
+            return NULL;
+        }
+        if (!PyUnicode_EqualToUTF8(access, "stable-read")) {
+            PyErr_SetString(PyExc_ValueError, "invalid memoryview access mode");
+            return NULL;
+        }
+        flags |= PyBUF_STABLE_READ;
+    }
+    return PyMemoryView_FromObjectAndFlags(object, flags);
 }
 
 
@@ -1739,6 +1776,14 @@ memory_getbuf(PyObject *_self, Py_buffer *view, int flags)
 
     CHECK_RELEASED_INT(self);
     CHECK_RESTRICTED_INT(self);
+
+    if ((flags & PyBUF_STABLE_READ) &&
+        !mbuf_has_flag(self->mbuf, _Py_MANAGED_BUFFER_STABLE_READ))
+    {
+        PyErr_SetString(PyExc_BufferError,
+                        "memoryview does not own a stable acquisition");
+        return -1;
+    }
 
     /* start with complete information */
     *view = *base;
@@ -4142,4 +4187,5 @@ PyTypeObject PyMemoryView_Type = {
     0,                                        /* tp_init */
     0,                                        /* tp_alloc */
     memoryview,                               /* tp_new */
+    ._tp_buffer_capabilities = PyBUF_STABLE_READ,
 };

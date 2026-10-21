@@ -388,6 +388,62 @@ get_buffer_bytes(PyObject *Py_UNUSED(module), PyObject *args)
     return result;
 }
 
+/* Hold a stable C export across a Python callback, then read it with the
+ * thread state detached. The callback can release dependent views or arrange
+ * for another thread to try to release the source. */
+static PyObject *
+stable_buffer_read(PyObject *Py_UNUSED(module), PyObject *args)
+{
+    PyObject *obj, *callback;
+    if (!PyArg_ParseTuple(args, "OO", &obj, &callback)) {
+        return NULL;
+    }
+    Py_buffer view;
+    int flags = PyBUF_C_CONTIGUOUS | PyBUF_FORMAT | PyBUF_STABLE_READ;
+    if (PyObject_GetBuffer(obj, &view, flags) < 0) {
+        return NULL;
+    }
+    assert(view.obj == obj);
+    assert(view.readonly == 1);
+    PyObject *result = PyObject_CallNoArgs(callback);
+    if (result != NULL) {
+        Py_DECREF(result);
+        result = PyBytes_FromStringAndSize(NULL, view.len);
+        if (result != NULL) {
+            char *dest = PyBytes_AS_STRING(result);
+            Py_BEGIN_ALLOW_THREADS
+            memcpy(dest, view.buf, view.len);
+            Py_END_ALLOW_THREADS
+        }
+    }
+    PyBuffer_Release(&view);
+    return result;
+}
+
+/* The caller must keep obj and its export alive while using the raw wrapper. */
+static PyObject *
+memoryview_from_raw(PyObject *Py_UNUSED(module), PyObject *args)
+{
+    PyObject *obj;
+    int from_buffer;
+    if (!PyArg_ParseTuple(args, "Op", &obj, &from_buffer)) {
+        return NULL;
+    }
+    Py_buffer view;
+    if (PyObject_GetBuffer(obj, &view, PyBUF_FULL_RO | PyBUF_STABLE_READ) < 0) {
+        return NULL;
+    }
+    PyObject *result;
+    if (from_buffer) {
+        result = PyMemoryView_FromBuffer(&view);
+    }
+    else {
+        result = PyMemoryView_FromMemory(view.buf, view.len, PyBUF_READ);
+    }
+    PyBuffer_Release(&view);
+    return result;
+}
+
 static PyMethodDef test_methods[] = {
     {"buffer_pointer_as_int", buffer_pointer_as_int, METH_O},
     {"clear_memoryview", clear_memoryview, METH_O},
@@ -398,6 +454,8 @@ static PyMethodDef test_methods[] = {
      METH_O},
     {"register_buffer_capabilities", register_buffer_capabilities, METH_VARARGS},
     {"get_buffer_bytes", get_buffer_bytes, METH_VARARGS},
+    {"stable_buffer_read", stable_buffer_read, METH_VARARGS},
+    {"memoryview_from_raw", memoryview_from_raw, METH_VARARGS},
     {NULL},
 };
 

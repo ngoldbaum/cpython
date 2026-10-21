@@ -7,6 +7,7 @@
    and functions instead! */
 #define _Py_MANAGED_BUFFER_RELEASED    0x001  /* access to exporter blocked */
 #define _Py_MANAGED_BUFFER_FREE_FORMAT 0x002  /* free format */
+#define _Py_MANAGED_BUFFER_STABLE_READ 0x004  /* owns a stable acquisition */
 
 typedef struct {
     PyObject_HEAD
