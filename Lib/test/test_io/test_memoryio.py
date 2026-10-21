@@ -1054,6 +1054,62 @@ class CBytesIOTest(PyBytesIOTest):
         memio = self.ioclass(ba)
         self.assertEqual(sys.getrefcount(ba), old_rc)
 
+    def test_reinit_exporting_callback(self):
+        for method in ('__init__', '__setstate__'):
+            with self.subTest(method=method):
+                stream = self.ioclass(b'original')
+                stream.seek(3)
+                views = []
+
+                class Input:
+                    def __buffer__(self, flags):
+                        views.append(stream.getbuffer())
+                        return memoryview(b'replacement')
+
+                value = Input()
+                args = (value,) if method == '__init__' else ((value, 1, None),)
+                with self.assertRaises(BufferError):
+                    getattr(stream, method)(*args)
+                self.assertEqual(stream.tell(), 3)
+                self.assertEqual(stream.getvalue(), b'original')
+                self.assertEqual(bytes(views[0]), b'original')
+                views[0].release()
+                if method == '__init__':
+                    stream.__init__(b'replacement')
+                else:
+                    stream.__setstate__((b'replacement', 1, None))
+                self.assertEqual(stream.getvalue(), b'replacement')
+
+    def test_truncate_exporting_callback(self):
+        stream = self.ioclass(b'original')
+        stream.seek(3)
+        views = []
+
+        class Size:
+            def __index__(self):
+                views.append(stream.getbuffer())
+                return 0
+
+        with self.assertRaises(BufferError):
+            stream.truncate(Size())
+        self.assertEqual(stream.tell(), 3)
+        self.assertEqual(stream.getvalue(), b'original')
+        self.assertEqual(bytes(views[0]), b'original')
+        views[0].release()
+        self.assertEqual(stream.truncate(0), 0)
+
+    def test_truncate_closing_callback(self):
+        stream = self.ioclass(b'original')
+
+        class Size:
+            def __index__(self):
+                stream.close()
+                return 0
+
+        with self.assertRaises(ValueError):
+            stream.truncate(Size())
+        self.assertTrue(stream.closed)
+
     def test_write_with_export(self):
         memio = self.ioclass(b"abcd")
         memio.seek(2)

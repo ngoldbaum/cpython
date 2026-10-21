@@ -230,43 +230,30 @@ resize_buffer_lock_held(bytesio *self, size_t size)
     return -1;
 }
 
-/* Internal routine for writing a string of bytes to the buffer of a BytesIO
-   object. Returns the number of bytes written, or -1 on error.
-   Inlining is disabled because it's significantly decreases performance
-   of writelines() in PGO build. */
-Py_NO_INLINE static Py_ssize_t
-write_bytes_lock_held(bytesio *self, PyObject *b)
+/* Write an already acquired buffer without invoking exporter callbacks. */
+static Py_ssize_t
+write_buffer_lock_held(bytesio *self, const Py_buffer *buf)
 {
     _Py_CRITICAL_SECTION_ASSERT_OBJECT_LOCKED(self);
-
-    Py_buffer buf;
-    Py_ssize_t len;
-    if (PyObject_GetBuffer(b, &buf, PyBUF_CONTIG_RO) < 0) {
+    if (check_closed(self) || check_exports(self)) {
         return -1;
     }
 
-    if (check_closed(self) || check_exports(self)) {
-        len = -1;
-        goto done;
-    }
-
-    len = buf.len;
+    Py_ssize_t len = buf->len;
     if (len == 0) {
-        goto done;
+        return len;
     }
 
     assert(self->pos >= 0);
     size_t endpos = (size_t)self->pos + len;
     if (endpos > (size_t)PyBytes_GET_SIZE(self->buf)) {
         if (resize_buffer_lock_held(self, endpos) < 0) {
-            len = -1;
-            goto done;
+            return -1;
         }
     }
     else if (SHARED_BUF(self)) {
         if (unshare_buffer_lock_held(self, Py_MAX(endpos, (size_t)self->string_size)) < 0) {
-            len = -1;
-            goto done;
+            return -1;
         }
     }
 
@@ -285,7 +272,7 @@ write_bytes_lock_held(bytesio *self, PyObject *b)
 
     /* Copy the data to the internal buffer, overwriting some of the existing
        data if self->pos < self->string_size. */
-    memcpy(PyBytes_AS_STRING(self->buf) + self->pos, buf.buf, len);
+    memcpy(PyBytes_AS_STRING(self->buf) + self->pos, buf->buf, len);
     self->pos = endpos;
 
     /* Set the new length of the internal string if it has changed. */
@@ -293,9 +280,45 @@ write_bytes_lock_held(bytesio *self, PyObject *b)
         self->string_size = endpos;
     }
 
-  done:
+    return len;
+}
+
+/* Inlining is disabled because it significantly decreases performance
+   of writelines() in PGO builds. */
+Py_NO_INLINE static Py_ssize_t
+write_bytes_lock_held(bytesio *self, PyObject *b)
+{
+    Py_buffer buf;
+    if (PyObject_GetBuffer(b, &buf, PyBUF_CONTIG_RO) < 0) {
+        return -1;
+    }
+    Py_ssize_t len = write_buffer_lock_held(self, &buf);
     PyBuffer_Release(&buf);
     return len;
+}
+
+/* Acquire before resetting any state: the callback may export or close self.
+   Finish updating the position before the release callback can run. */
+static int
+reinit_buffer_lock_held(bytesio *self, PyObject *value, Py_ssize_t pos)
+{
+    _Py_CRITICAL_SECTION_ASSERT_OBJECT_LOCKED(self);
+
+    Py_buffer buf;
+    if (PyObject_GetBuffer(value, &buf, PyBUF_CONTIG_RO) < 0) {
+        return -1;
+    }
+    int result = -1;
+    if (!check_closed(self) && !check_exports(self)) {
+        self->string_size = 0;
+        self->pos = 0;
+        if (write_buffer_lock_held(self, &buf) >= 0) {
+            self->pos = pos;
+            result = 0;
+        }
+    }
+    PyBuffer_Release(&buf);
+    return result;
 }
 
 /*[clinic input]
@@ -756,6 +779,10 @@ _io_BytesIO_truncate_impl(bytesio *self, PyObject *size)
         }
     }
 
+    /* Converting size can call __index__ and suspend the critical section. */
+    CHECK_CLOSED(self);
+    CHECK_EXPORTS(self);
+
     if (new_size < self->string_size) {
         Py_ssize_t old_string_size = self->string_size;
         self->string_size = new_size;
@@ -993,7 +1020,6 @@ static PyObject *
 _io_BytesIO___setstate___impl(bytesio *self, PyObject *state)
 /*[clinic end generated code: output=3605abdec171bb98 input=82a189599ba75083]*/
 {
-    PyObject *result;
     PyObject *position_obj;
     PyObject *dict;
     Py_ssize_t pos;
@@ -1010,18 +1036,6 @@ _io_BytesIO___setstate___impl(bytesio *self, PyObject *state)
         return NULL;
     }
     CHECK_EXPORTS(self);
-    /* Reset the object to its default state. This is only needed to handle
-       the case of repeated calls to __setstate__. */
-    self->string_size = 0;
-    self->pos = 0;
-
-    /* Set the value of the internal buffer. If state[0] does not support the
-       buffer protocol, bytesio_write will raise the appropriate TypeError. */
-    result = _io_BytesIO_write_impl(self, PyTuple_GET_ITEM(state, 0));
-    if (result == NULL)
-        return NULL;
-    Py_DECREF(result);
-
     /* Set carefully the position value. Alternatively, we could use the seek
        method instead of modifying self->pos directly to better protect the
        object internal state against erroneous (or malicious) inputs. */
@@ -1040,17 +1054,20 @@ _io_BytesIO___setstate___impl(bytesio *self, PyObject *state)
                         "position value cannot be negative");
         return NULL;
     }
-    self->pos = pos;
+
+    dict = PyTuple_GET_ITEM(state, 2);
+    if (dict != Py_None && !PyDict_Check(dict)) {
+        PyErr_Format(PyExc_TypeError,
+                     "third item of state should be a dict, got a %.200s",
+                     Py_TYPE(dict)->tp_name);
+        return NULL;
+    }
+    if (reinit_buffer_lock_held(self, PyTuple_GET_ITEM(state, 0), pos) < 0) {
+        return NULL;
+    }
 
     /* Set the dictionary of the instance variables. */
-    dict = PyTuple_GET_ITEM(state, 2);
     if (dict != Py_None) {
-        if (!PyDict_Check(dict)) {
-            PyErr_Format(PyExc_TypeError,
-                         "third item of state should be a dict, got a %.200s",
-                         Py_TYPE(dict)->tp_name);
-            return NULL;
-        }
         if (self->dict) {
             /* Alternatively, we could replace the internal dictionary
                completely. However, it seems more practical to just update it. */
@@ -1125,26 +1142,18 @@ _io_BytesIO___init___impl(bytesio *self, PyObject *initvalue)
         return -1;
     }
 
-    /* In case, __init__ is called multiple times. */
-    self->string_size = 0;
-    self->pos = 0;
-
-    if (initvalue && initvalue != Py_None) {
-        if (PyBytes_CheckExact(initvalue)) {
-            Py_XSETREF(self->buf, Py_NewRef(initvalue));
-            clear_shared_buf(self);
-            self->string_size = PyBytes_GET_SIZE(initvalue);
-        }
-        else {
-            PyObject *res;
-            res = _io_BytesIO_write_impl(self, initvalue);
-            if (res == NULL)
-                return -1;
-            Py_DECREF(res);
-            self->pos = 0;
-        }
+    if (initvalue && initvalue != Py_None && !PyBytes_CheckExact(initvalue)) {
+        return reinit_buffer_lock_held(self, initvalue, 0);
     }
 
+    /* In case __init__ is called multiple times. */
+    self->string_size = 0;
+    self->pos = 0;
+    if (initvalue && initvalue != Py_None) {
+        Py_XSETREF(self->buf, Py_NewRef(initvalue));
+        clear_shared_buf(self);
+        self->string_size = PyBytes_GET_SIZE(initvalue);
+    }
     return 0;
 }
 
