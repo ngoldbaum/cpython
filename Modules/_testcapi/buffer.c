@@ -114,6 +114,19 @@ buffer_pointer_as_int(PyObject *Py_UNUSED(module), PyObject *obj)
     return out;
 }
 
+static PyObject *
+clear_memoryview(PyObject *Py_UNUSED(module), PyObject *obj)
+{
+    if (!PyMemoryView_Check(obj)) {
+        PyErr_SetString(PyExc_TypeError, "memoryview expected");
+        return NULL;
+    }
+    if (Py_TYPE(obj)->tp_clear(obj) < 0) {
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
 /* A native exporter with immutable storage. bad_result deliberately violates
  * the successful-export contract, using only valid owned references. */
 typedef struct {
@@ -377,6 +390,7 @@ get_buffer_bytes(PyObject *Py_UNUSED(module), PyObject *args)
 
 static PyMethodDef test_methods[] = {
     {"buffer_pointer_as_int", buffer_pointer_as_int, METH_O},
+    {"clear_memoryview", clear_memoryview, METH_O},
     {"make_stable_buffer_type", _PyCFunction_CAST(make_stable_buffer_type),
      METH_VARARGS | METH_KEYWORDS},
     {"make_stable_buffer_module_type", make_stable_buffer_module_type, METH_O},
