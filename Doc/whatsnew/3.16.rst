@@ -108,6 +108,15 @@ Other language changes
   (Contributed by Kumar Aditya in :gh:`157361`.)
 
 
+Default interactive shell
+=========================
+
+* The :term:`REPL` now displays error messages when editing commands cannot be
+  performed, such as when tab completion finds no matches or a history search
+  fails.
+  (Contributed by Bartosz Sławecki in :gh:`148228`.)
+
+
 New modules
 ===========
 
@@ -351,6 +360,16 @@ curses
   full Unicode range, including combining characters, when curses is built with
   wide-character support.
   (Contributed by Serhiy Storchaka in :gh:`133031`.)
+
+
+datetime
+--------
+
+* Add the ``%Nf`` format code (where *N* is from 1 to 6) to
+  :meth:`datetime.datetime.strftime`, :meth:`datetime.time.strftime`,
+  :meth:`datetime.date.strftime`, :meth:`datetime.datetime.strptime` and
+  :meth:`datetime.time.strptime`.
+  (Contributed by Stan Ulbrych and Karoline Pauls in :gh:`157290`.)
 
 
 dbm.gnu

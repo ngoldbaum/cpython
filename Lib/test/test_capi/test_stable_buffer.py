@@ -659,17 +659,15 @@ class StableMemoryviewTests(unittest.TestCase):
         def release():
             try:
                 if started.wait(support.SHORT_TIMEOUT):
-                    with self.assertRaises(BufferError) as cm:
-                        view.release()
-                    self.assertIs(type(cm.exception), BufferError)
+                    view.release()
                     releases.append(obj.releases)
             finally:
                 resume.set()
         with threading_helper.start_threads([Thread(target=release)]):
             self.assertTrue(view == Other())
         self.assertEqual(releases, [0])
-        self.assertEqual(view.tobytes(), b'stable')
-        view.release()
+        with self.assertRaisesRegex(ValueError, 'released'):
+            view.tobytes()
         self.assertEqual((obj.acquisitions, obj.releases), (1, 1))
 
     @threading_helper.requires_working_threading()
@@ -699,7 +697,7 @@ class StableMemoryviewTests(unittest.TestCase):
                     try:
                         source.release()
                     except BufferError:
-                        pass  # Derivation still holds an operation pin.
+                        pass  # Derivation still holds a C buffer export.
                 threading_helper.run_concurrently([read, release])
                 source.release()
                 self.assertEqual((obj.acquisitions, obj.releases), (1, 1))
