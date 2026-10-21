@@ -579,6 +579,44 @@ class BytesMemoryviewTest(unittest.TestCase,
         view.release()
         data.clear()
 
+    @threading_helper.requires_working_threading()
+    def test_comparison_buffer_callback_concurrent_release(self):
+        from threading import Event
+
+        for fail in (False, True):
+            with self.subTest(fail=fail):
+                data = bytearray(b'a' * 65536)
+                view = memoryview(data)
+                started = Event()
+                resume = Event()
+
+                class Other:
+                    def __buffer__(self, flags):
+                        started.set()
+                        if not resume.wait(support.SHORT_TIMEOUT):
+                            raise RuntimeError('release thread did not finish')
+                        if fail:
+                            raise BufferError('acquisition failed')
+                        return memoryview(b'a' * 65536)
+
+                def compare():
+                    self.assertEqual(view == Other(), not fail)
+
+                def release():
+                    try:
+                        self.assertTrue(started.wait(support.SHORT_TIMEOUT))
+                        with self.assertRaises(BufferError):
+                            view.release()
+                        with self.assertRaises(BufferError):
+                            data.clear()
+                    finally:
+                        resume.set()
+
+                threading_helper.run_concurrently([compare, release])
+                self.assertEqual(view.tobytes(), b'a' * 65536)
+                view.release()
+                data.clear()
+
     def test_comparison_releases_buffer_after_access(self):
         data = bytearray(b'abc')
         view = memoryview(data)
