@@ -701,3 +701,382 @@ class StableMemoryviewTests(unittest.TestCase):
                 threading_helper.run_concurrently([read, release])
                 source.release()
                 self.assertEqual((obj.acquisitions, obj.releases), (1, 1))
+
+
+class StableBytesIOTests(unittest.TestCase):
+    def test_conflicts_across_exporters(self):
+        for stable in (False, True):
+            with self.subTest(stable=stable):
+                stream = io.BytesIO(b'abcdef')
+                access = 'stable-read' if stable else None
+                first = stream.getbuffer(access=access)
+                owner = first.obj
+                second = stream.getbuffer(access=access)
+                alias = memoryview(owner, access=access)
+                readonly = first.toreadonly()
+                self.assertEqual(first.readonly, stable)
+                self.assertIs(alias.obj, owner)
+                self.assertIsNot(second.obj, owner)
+                opposite = None if stable else 'stable-read'
+                for view in (first, second, alias):
+                    with self.assertRaises(BufferConflictError):
+                        stream.getbuffer(access=opposite)
+                    with self.assertRaises(BufferConflictError):
+                        memoryview(owner, access=opposite)
+                    view.release()
+                # A readonly derivative of an ordinary view still owns a
+                # writable acquisition; it cannot be upgraded to stable.
+                with self.assertRaises(BufferConflictError):
+                    stream.getbuffer(access=opposite)
+                readonly.release()
+                with memoryview(owner, access=opposite) as view:
+                    self.assertEqual(view.readonly, not stable)
+                    self.assertEqual(bytes(view), b'abcdef')
+                # The same private exporter can acquire either kind, and each
+                # acquisition must release its own record correctly.
+                with memoryview(owner, access=access):
+                    pass
+                stream.write(b'x')
+
+    def test_mutations_preserve_state_on_conflict(self):
+        mutations = (
+            lambda s: s.write(b''), lambda s: s.write(b'x'),
+            lambda s: s.write(b'x' * 100),
+            lambda s: s.writelines([]), lambda s: s.writelines([b'x']),
+            lambda s: s.truncate(), lambda s: s.truncate(0),
+            lambda s: s.truncate(100),
+            lambda s: s.__init__(), lambda s: s.__init__(None),
+            lambda s: s.__init__(b'new'), lambda s: s.__init__(bytearray(b'new')),
+            lambda s: s.__setstate__((b'new', 0, {'changed': True})),
+        )
+        for access in (None, 'stable-read'):
+            for mutate in mutations:
+                with self.subTest(access=access, mutate=mutate):
+                    stream = io.BytesIO(b'abcdef')
+                    stream.seek(2)
+                    with stream.getbuffer(access=access) as view:
+                        with self.assertRaises(BufferConflictError) as cm:
+                            mutate(stream)
+                        self.assertIs(type(cm.exception), BufferConflictError)
+                        self.assertEqual(stream.getvalue(), b'abcdef')
+                        self.assertEqual(stream.tell(), 2)
+                        self.assertEqual(stream.__dict__, {})
+                        self.assertEqual(bytes(view), b'abcdef')
+                    stream.write(b'x')
+                    self.assertEqual(stream.getvalue(), b'abxdef')
+
+    def test_reads_and_cursor_movement(self):
+        stream = io.BytesIO(b'abc\ndef')
+        with stream.getbuffer(access='stable-read') as view:
+            self.assertEqual(stream.getvalue(), b'abc\ndef')
+            self.assertEqual(stream.peek(), b'abc\ndef')
+            self.assertEqual(stream.readline(), b'abc\n')
+            self.assertEqual(stream.read1(), b'def')
+            stream.seek(0)
+            target = bytearray(3)
+            self.assertEqual(stream.readinto(target), 3)
+            self.assertEqual(target, b'abc')
+            self.assertEqual(stream.read(), b'\ndef')
+            stream.seek(0)
+            self.assertEqual(list(stream), [b'abc\n', b'def'])
+            self.assertEqual(stream.__getstate__()[:2], (b'abc\ndef', 7))
+            self.assertEqual(pickle.loads(pickle.dumps(stream)).getvalue(),
+                             b'abc\ndef')
+            self.assertEqual(bytes(view), b'abc\ndef')
+
+    def test_dependent_views_and_c_exports(self):
+        for derive in (memoryview, lambda v: memoryview(v, access='stable-read'),
+                       lambda v: v[::2], lambda v: v.cast('H'),
+                       lambda v: v.toreadonly(),
+                       lambda v: v.__buffer__(STABLE | F.FULL_RO)):
+            with self.subTest(derive=derive):
+                stream = io.BytesIO(b'abcdef')
+                source = stream.getbuffer(access='stable-read')
+                child = derive(source)
+                # A __buffer__ wrapper holds a C export on the source view.
+                if child.obj is source:
+                    with self.assertRaises(BufferError):
+                        source.release()
+                else:
+                    source.release()
+                with self.assertRaises(BufferConflictError):
+                    stream.getbuffer()
+                if child.c_contiguous:
+                    self.assertEqual(_testlimitedcapi.get_stable_buffer_bytes(child),
+                                     child.tobytes())
+                child.release()
+                source.release()
+                with stream.getbuffer() as writable:
+                    writable[0] = ord('x')
+                self.assertEqual(stream.getvalue(), b'xbcdef')
+
+    def test_close_keeps_exports_alive(self):
+        for access in (None, 'stable-read'):
+            with self.subTest(access=access):
+                stream = io.BytesIO(b'abcdef')
+                source = stream.getbuffer(access=access)
+                owner = source.obj
+                child = source[1:]
+                source.release()
+                stream.close()
+                stream.close()
+                self.assertEqual(child.tobytes(), b'bcdef')
+                for mode in (None, 'stable-read'):
+                    with self.assertRaises(ValueError):
+                        stream.getbuffer(access=mode)
+                    with self.assertRaises(ValueError):
+                        memoryview(owner, access=mode)
+                with self.assertRaises(BufferConflictError):
+                    stream.__init__(b'new')
+                if access is None:
+                    child[0] = ord('x')
+                else:
+                    self.assertEqual(_testcapi.stable_buffer_read(child,
+                        lambda: None), b'bcdef')
+                    with memoryview(child, access=access) as alias:
+                        self.assertEqual(alias.tobytes(), b'bcdef')
+                child.release()
+                stream.__init__(b'new')
+                self.assertEqual(stream.getvalue(), b'new')
+
+    def test_c_export_outlives_close_and_callback_failure(self):
+        for fail in (False, True):
+            with self.subTest(fail=fail):
+                stream = io.BytesIO(b'abcdef')
+                source = stream.getbuffer(access='stable-read')
+                owner = source.obj
+                def callback():
+                    source.release()
+                    stream.close()
+                    with self.assertRaises(BufferConflictError):
+                        stream.__init__(b'new')
+                    if fail:
+                        raise RuntimeError('callback failed')
+                if fail:
+                    with self.assertRaisesRegex(RuntimeError, 'callback failed'):
+                        _testcapi.stable_buffer_read(owner, callback)
+                else:
+                    self.assertEqual(_testcapi.stable_buffer_read(owner, callback),
+                                     b'abcdef')
+                stream.__init__(b'new')
+                self.assertEqual(stream.getvalue(), b'new')
+
+    def test_copy_on_write(self):
+        data = bytes(bytearray(b'original' * 100))
+        stream = io.BytesIO(data)
+        with stream.getbuffer(access='stable-read') as stable:
+            self.assertEqual(_testcapi.buffer_pointer_as_int(stable),
+                             _testcapi.buffer_pointer_as_int(data))
+            self.assertEqual(_testcapi.stable_buffer_read(stable, lambda: None), data)
+        with stream.getbuffer() as writable:
+            self.assertNotEqual(_testcapi.buffer_pointer_as_int(writable),
+                                _testcapi.buffer_pointer_as_int(data))
+            writable[0] = ord('x')
+        self.assertEqual(data, b'original' * 100)
+        for snapshot_method in ('getvalue', 'read', 'peek'):
+            stream = io.BytesIO()
+            stream.write(data)
+            stream.seek(0)
+            snapshot = getattr(stream, snapshot_method)()
+            with stream.getbuffer(access='stable-read'):
+                with self.assertRaises(BufferConflictError):
+                    stream.write(b'y')
+            stream.seek(0)
+            stream.write(b'z')
+            self.assertEqual(snapshot, data)
+
+    def test_stable_request_flags(self):
+        stream = io.BytesIO(b'abcdef')
+        with stream.getbuffer(access='stable-read') as source:
+            owner = source.obj
+            for flags in (F.SIMPLE, F.FULL_RO, F.C_CONTIGUOUS | F.FORMAT,
+                          F.F_CONTIGUOUS, F.ANY_CONTIGUOUS):
+                self.assertEqual(acquire(owner, STABLE | flags), b'abcdef')
+            with self.assertRaises(ValueError):
+                acquire(owner, STABLE | F.WRITABLE)
+            with self.assertRaises(ValueError):
+                acquire(owner, STABLE | F.FORMAT)
+            with self.assertRaises(BufferConflictError):
+                acquire(owner, F.FULL_RO)
+            # BytesIO itself is not a buffer exporter.
+            with self.assertRaises(TypeError):
+                memoryview(stream, access='stable-read')
+        # Failed requests must not leave export records behind.
+        stream.write(b'x')
+
+    def test_subclasses_and_empty_streams(self):
+        class Stream(io.BytesIO):
+            pass
+        for cls in (io.BytesIO, Stream):
+            for data in (b'', b'abc'):
+                with self.subTest(cls=cls, data=data):
+                    stream = cls(data)
+                    with io.BytesIO.getbuffer(stream, access='stable-read') as view:
+                        self.assertTrue(view.readonly)
+                        self.assertEqual(bytes(view), data)
+                        with self.assertRaises(BufferConflictError):
+                            stream.write(b'x')
+                    stream.write(b'x')
+
+    def test_reentrant_acquisition(self):
+        for operation in ('write', 'writelines', '__init__', '__setstate__', 'truncate'):
+            with self.subTest(operation=operation):
+                stream = io.BytesIO(b'original')
+                stream.seek(3)
+                views = []
+                class Input:
+                    def __buffer__(self, flags):
+                        views.append(stream.getbuffer(access='stable-read'))
+                        return memoryview(b'new')
+                    def __index__(self):
+                        views.append(stream.getbuffer(access='stable-read'))
+                        return 0
+                value = Input()
+                if operation == '__setstate__':
+                    args = ((value, 1, None),)
+                elif operation == 'writelines':
+                    args = ([value],)
+                else:
+                    args = (value,)
+                with self.assertRaises(BufferConflictError):
+                    getattr(stream, operation)(*args)
+                self.assertEqual(stream.tell(), 3)
+                self.assertEqual(stream.getvalue(), b'original')
+                self.assertEqual(bytes(views[0]), b'original')
+                views[0].release()
+                stream.write(b'x')
+
+    @support.thread_unsafe('requires synchronous garbage collection')
+    def test_gc_releases_exports(self):
+        stream = io.BytesIO(b'abc')
+        view = stream.getbuffer(access='stable-read')
+        cycle = [view]
+        cycle.append(cycle)
+        ref = weakref.ref(view)
+        del view, cycle
+        support.gc_collect()
+        self.assertIsNone(ref())
+        stream.write(b'x')
+
+    @support.nomemtest
+    def test_acquisition_failure_rollback(self):
+        for access in (None, 'stable-read'):
+            for start in range(15):
+                stream = io.BytesIO(b'original')
+                view = None
+                try:
+                    with support.inject_memory_error_cm(start, start + 1):
+                        view = stream.getbuffer(access=access)
+                except MemoryError:
+                    pass
+                if view is not None:
+                    view.release()
+                with stream.getbuffer():
+                    pass
+                with stream.getbuffer(access='stable-read'):
+                    pass
+                stream.write(b'x')
+
+    @threading_helper.requires_working_threading()
+    def test_concurrent_conflicting_acquisitions(self):
+        from threading import Barrier
+
+        stream = io.BytesIO(b'x' * 65536)
+        for _ in range(30):
+            barrier = Barrier(2)
+            results = []
+            def acquire_mode(access):
+                view = None
+                try:
+                    barrier.wait(support.SHORT_TIMEOUT)
+                    try:
+                        view = stream.getbuffer(access=access)
+                    except BufferConflictError:
+                        pass
+                    results.append(view is not None)
+                    barrier.wait(support.SHORT_TIMEOUT)
+                finally:
+                    if view is not None:
+                        view.release()
+            threading_helper.run_concurrently([
+                lambda: acquire_mode(None), lambda: acquire_mode('stable-read')])
+            self.assertEqual(sorted(results), [False, True])
+            stream.seek(0)
+            stream.write(b'x')
+
+    @threading_helper.requires_working_threading()
+    def test_detached_reader_blocks_mutation(self):
+        from threading import Event
+
+        data = b'x' * (1024 * 1024)
+        stream = io.BytesIO(data)
+        source = stream.getbuffer(access='stable-read')
+        owner = source.obj
+        started = Event()
+        resume = Event()
+        def callback():
+            started.set()
+            if not resume.wait(support.SHORT_TIMEOUT):
+                raise RuntimeError('writer did not finish')
+        def reader():
+            self.assertEqual(_testcapi.stable_buffer_read(owner, callback), data)
+        def writer():
+            try:
+                self.assertTrue(started.wait(support.SHORT_TIMEOUT))
+                resume.set()
+                for _ in range(100):
+                    with self.assertRaises(BufferConflictError):
+                        stream.write(b'y')
+                    with self.assertRaises(BufferConflictError):
+                        stream.getbuffer()
+            finally:
+                resume.set()
+        threading_helper.run_concurrently([reader, writer])
+        source.release()
+        stream.write(b'y')
+
+    def test_operation_retains_stable_acquisition(self):
+        stream = io.BytesIO(b'abcdef')
+        view = stream.getbuffer(access='stable-read')
+        assert_raises = self.assertRaises
+        class Other:
+            def __buffer__(self, flags):
+                view.release()
+                with assert_raises(BufferConflictError):
+                    stream.write(b'x')
+                return memoryview(b'abcdef')
+        self.assertTrue(view == Other())
+        stream.write(b'x')
+        self.assertEqual(stream.getvalue(), b'xbcdef')
+
+    @threading_helper.requires_working_threading()
+    def test_concurrent_acquisition_and_mutation(self):
+        from threading import Barrier, Event
+
+        mutations = (
+            lambda s: s.write(b'new'), lambda s: s.truncate(0),
+            lambda s: s.__init__(b'new'),
+            lambda s: s.__setstate__((b'new', 1, None)),
+        )
+        for mutate in mutations:
+            for _ in range(20):
+                stream = io.BytesIO(b'original')
+                barrier = Barrier(2)
+                done = Event()
+                def reader():
+                    barrier.wait(support.SHORT_TIMEOUT)
+                    with stream.getbuffer(access='stable-read') as view:
+                        before = view.tobytes()
+                        self.assertTrue(done.wait(support.SHORT_TIMEOUT))
+                        self.assertEqual(view.tobytes(), before)
+                def writer():
+                    try:
+                        barrier.wait(support.SHORT_TIMEOUT)
+                        try:
+                            mutate(stream)
+                        except BufferConflictError:
+                            pass  # The stable acquisition won the race.
+                    finally:
+                        done.set()
+                threading_helper.run_concurrently([reader, writer])
+                stream.__init__(b'next')

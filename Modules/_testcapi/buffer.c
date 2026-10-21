@@ -416,7 +416,9 @@ stable_buffer_read(PyObject *Py_UNUSED(module), PyObject *args)
             Py_END_ALLOW_THREADS
         }
     }
-    PyBuffer_Release(&view);
+    /* Per-export state must also work when a consumer copies the view. */
+    Py_buffer copy = view;
+    PyBuffer_Release(&copy);
     return result;
 }
 

@@ -2,6 +2,7 @@
 #include "pycore_bytesobject.h"       // _PyBytes_ResizeKeepOnError()
 #include "pycore_critical_section.h"  // Py_BEGIN_CRITICAL_SECTION()
 #include "pycore_list.h"              // _PyList_AppendTakeRef()
+#include "pycore_memoryobject.h"      // _PyMemoryView_FromBufferProc()
 #include "pycore_object.h"
 #include "pycore_pyatomic_ft_wrappers.h"
 #include "pycore_sysmodule.h"         // _PySys_GetSizeOf()
@@ -24,6 +25,7 @@ typedef struct {
     PyObject *dict;
     PyObject *weakreflist;
     Py_ssize_t exports;
+    Py_ssize_t stable_exports;  /* protected by the stream lock */
 #ifdef Py_GIL_DISABLED
     int buf_shared;
 #endif
@@ -38,12 +40,19 @@ typedef struct {
 
 #define bytesiobuf_CAST(op) ((bytesiobuf *)(op))
 
+/* Per-acquisition state, independent of the address of the Py_buffer. */
+typedef struct {
+    PyObject *buffer;
+    int stable;
+} bytesio_export;
+
 /* The bytesio object can be in three states:
   * Py_REFCNT(buf) == 1, exports == 0.
   * Py_REFCNT(buf) > 1.  exports == 0,
-    first modification or export causes the internal buffer copying.
+    first modification or writable export copies the internal buffer.
   * exports > 0.  Any modifications are forbidden.  Every exported buffer
     keeps a reference to buf, so it outlives closing of the bytesio object.
+    Stable and writable exports exclude each other across all bytesiobufs.
 */
 
 static int
@@ -60,7 +69,7 @@ static int
 check_exports(bytesio *self)
 {
     if (FT_ATOMIC_LOAD_SSIZE_RELAXED(self->exports) > 0) {
-        PyErr_SetString(PyExc_BufferError,
+        PyErr_SetString(PyExc_BufferConflictError,
                         "Existing exports of data: object cannot be re-sized");
         return 1;
     }
@@ -402,13 +411,19 @@ _io.BytesIO.getbuffer
 
     cls: defining_class
     /
+    *
+    access: object = None
 
-Get a read-write view over the contents of the BytesIO object.
+Get a view over the contents of the BytesIO object.
+
+The default view is writable. access="stable-read" requests a stable
+read-only view.
 [clinic start generated code]*/
 
 static PyObject *
-_io_BytesIO_getbuffer_impl(bytesio *self, PyTypeObject *cls)
-/*[clinic end generated code: output=045091d7ce87fe4e input=8295764061be77fd]*/
+_io_BytesIO_getbuffer_impl(bytesio *self, PyTypeObject *cls,
+                           PyObject *access)
+/*[clinic end generated code: output=fd14f51870d7850d input=020898ce491f2b90]*/
 {
     _PyIO_State *state = get_io_state_by_cls(cls);
     PyTypeObject *type = state->PyBytesIOBuffer_Type;
@@ -416,12 +431,25 @@ _io_BytesIO_getbuffer_impl(bytesio *self, PyTypeObject *cls)
     PyObject *view;
 
     CHECK_CLOSED(self);
+    int flags = PyBUF_FULL_RO;
+    if (access != Py_None) {
+        if (!PyUnicode_Check(access)) {
+            PyErr_SetString(PyExc_TypeError, "access must be a string or None");
+            return NULL;
+        }
+        if (!PyUnicode_EqualToUTF8(access, "stable-read")) {
+            PyErr_SetString(PyExc_ValueError, "invalid BytesIO access mode");
+            return NULL;
+        }
+        flags |= PyBUF_STABLE_READ;
+    }
 
     buf = (bytesiobuf *) type->tp_alloc(type, 0);
     if (buf == NULL)
         return NULL;
     buf->source = (bytesio*)Py_NewRef(self);
-    view = PyMemoryView_FromObject((PyObject *) buf);
+    view = _PyMemoryView_FromBufferProc((PyObject *)buf, flags,
+                                       type->tp_as_buffer->bf_getbuffer);
     Py_DECREF(buf);
     return view;
 }
@@ -922,6 +950,7 @@ _io_BytesIO_writelines_impl(bytesio *self, PyObject *lines)
     PyObject *it, *item;
 
     CHECK_CLOSED(self);
+    CHECK_EXPORTS(self);
 
     it = PyObject_GetIter(lines);
     if (it == NULL)
@@ -1136,9 +1165,7 @@ static int
 _io_BytesIO___init___impl(bytesio *self, PyObject *initvalue)
 /*[clinic end generated code: output=65c0c51e24c5b621 input=3da5a74ee4c4f1ac]*/
 {
-    if (FT_ATOMIC_LOAD_SSIZE_RELAXED(self->exports) > 0) {
-        PyErr_SetString(PyExc_BufferError,
-                        "Existing exports of data: object cannot be re-sized");
+    if (check_exports(self)) {
         return -1;
     }
 
@@ -1268,8 +1295,8 @@ PyType_Spec _Py_bytesio_spec = {
 
 /*
  * Implementation of the small intermediate object used by getbuffer().
- * getbuffer() returns a memoryview over this object, which should make it
- * invisible from Python code.
+ * Its identity is visible through memoryview.obj, so every acquisition must
+ * coordinate with all the other exporters belonging to the same stream.
  */
 
 static int
@@ -1283,19 +1310,42 @@ bytesiobuf_getbuffer_lock_held(PyObject *op, Py_buffer *view, int flags)
     if (check_closed(b)) {
         return -1;
     }
-    if (FT_ATOMIC_LOAD_SSIZE_RELAXED(b->exports) == 0 && SHARED_BUF(b)) {
-        if (unshare_buffer_lock_held(b, b->string_size) < 0)
+    int stable = (flags & PyBUF_STABLE_READ) != 0;
+    Py_ssize_t exports = FT_ATOMIC_LOAD_SSIZE_RELAXED(b->exports);
+    if ((stable && exports != b->stable_exports) ||
+        (!stable && b->stable_exports != 0))
+    {
+        PyErr_SetString(PyExc_BufferConflictError,
+                        "Existing exports have incompatible access");
+        return -1;
+    }
+    bytesio_export *export = PyMem_Malloc(sizeof(*export));
+    if (export == NULL) {
+        PyErr_NoMemory();
+        return -1;
+    }
+    if (!stable && exports == 0 && SHARED_BUF(b)) {
+        if (unshare_buffer_lock_held(b, b->string_size) < 0) {
+            PyMem_Free(export);
             return -1;
+        }
     }
 
-    /* cannot fail if view != NULL and readonly == 0 */
-    (void)PyBuffer_FillInfo(view, op,
-                            PyBytes_AS_STRING(b->buf), b->string_size,
-                            0, flags);
-    /* Keep the internal buffer alive: the bytesio object can be closed
-       while the buffer is exported. */
-    view->internal = Py_NewRef(b->buf);
+    /* Record the acquisition before publishing its view. */
+    export->buffer = Py_NewRef(b->buf);
+    export->stable = stable;
     FT_ATOMIC_ADD_SSIZE(b->exports, 1);
+    b->stable_exports += stable;
+    if (PyBuffer_FillInfo(view, op, PyBytes_AS_STRING(b->buf),
+                          b->string_size, stable, flags) < 0) {
+        FT_ATOMIC_ADD_SSIZE(b->exports, -1);
+        b->stable_exports -= stable;
+        Py_DECREF(export->buffer);
+        PyMem_Free(export);
+        return -1;
+    }
+    /* Closing the stream does not invalidate the exported storage. */
+    view->internal = export;
     return 0;
 }
 
@@ -1320,8 +1370,17 @@ bytesiobuf_releasebuffer(PyObject *op, Py_buffer *view)
 {
     bytesiobuf *obj = bytesiobuf_CAST(op);
     bytesio *b = bytesio_CAST(obj->source);
+    bytesio_export *export = view->internal;
+    Py_BEGIN_CRITICAL_SECTION(b);
+    assert(FT_ATOMIC_LOAD_SSIZE_RELAXED(b->exports) > 0);
+    assert(!export->stable || b->stable_exports > 0);
     FT_ATOMIC_ADD_SSIZE(b->exports, -1);
-    Py_CLEAR(view->internal);
+    b->stable_exports -= export->stable;
+    Py_END_CRITICAL_SECTION();
+    /* Dropping the backing bytes cannot interfere with a later acquisition. */
+    Py_DECREF(export->buffer);
+    PyMem_Free(export);
+    view->internal = NULL;
 }
 
 static int

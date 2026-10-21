@@ -912,11 +912,17 @@ class BytesIO(BufferedIOBase):
             raise ValueError("getvalue on closed file")
         return bytes(self._buffer)
 
-    def getbuffer(self):
+    def getbuffer(self, *, access=None):
         """Return a readable and writable view of the buffer.
         """
         if self.closed:
             raise ValueError("getbuffer on closed file")
+        if access is not None:
+            if not isinstance(access, str):
+                raise TypeError("access must be a string or None")
+            if str.__eq__(access, "stable-read") is not True:
+                raise ValueError("invalid BytesIO access mode")
+            raise BufferError("stable reads are not supported by _pyio.BytesIO")
         return memoryview(self._buffer)
 
     def close(self):

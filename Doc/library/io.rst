@@ -736,11 +736,11 @@ than raw I/O does.
    :class:`BytesIO` provides or overrides these methods in addition to those
    from :class:`BufferedIOBase` and :class:`IOBase`:
 
-   .. method:: getbuffer()
+   .. method:: getbuffer(*, access=None)
 
-      Return a readable and writable view over the contents of the buffer
-      without copying them.  Also, mutating the view will transparently
-      update the contents of the buffer::
+      Return a view over the contents of the buffer without copying them.
+      With *access* set to ``None`` (the default), the view is writable.
+      Mutating it updates the contents of the buffer::
 
          >>> b = io.BytesIO(b"abcdef")
          >>> view = b.getbuffer()
@@ -748,13 +748,29 @@ than raw I/O does.
          >>> b.getvalue()
          b'ab56ef'
 
-      .. note::
-         As long as the view exists, the :class:`BytesIO` object cannot be
-         resized.  Closing it does not invalidate the view.
+      With ``access="stable-read"``, return a read-only view whose contents,
+      layout, and backing storage remain unchanged until all dependent views,
+      C buffer exports, and active operations finish using it. Multiple stable
+      acquisitions can coexist, but overlap between stable and writable
+      acquisitions raises :exc:`BufferConflictError`. These checks also apply
+      to acquisitions through the private exporter exposed by the view's
+      :attr:`~memoryview.obj` attribute.
+
+      While either kind of export exists, :meth:`write`, :meth:`writelines`,
+      :meth:`truncate`, :meth:`!__init__`, and :meth:`!__setstate__` raise
+      :exc:`BufferConflictError` before changing stream state. Reads and cursor
+      movement remain permitted. Closing the stream does not invalidate its
+      existing views, but prevents new acquisitions from the stream or its
+      private exporters.
+
+      Other strings for *access* raise :exc:`ValueError`; other types raise
+      :exc:`TypeError`.
 
       .. versionadded:: 3.2
 
       .. versionchanged:: 3.16
+         Added the *access* parameter. Live-export conflicts now raise
+         :exc:`BufferConflictError`, a subclass of :exc:`BufferError`.
          The :class:`BytesIO` object can now be closed while the view exists.
 
    .. method:: getvalue()

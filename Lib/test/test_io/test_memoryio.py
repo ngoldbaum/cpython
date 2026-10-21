@@ -470,6 +470,26 @@ class PyBytesIOTest(MemoryTestMixin, MemorySeekTestMixin, unittest.TestCase):
         memio.close()
         self.assertRaises(ValueError, memio.getbuffer)
 
+    def test_getbuffer_access_argument(self):
+        stream = self.ioclass(b'abc')
+        with stream.getbuffer(access=None) as view:
+            self.assertFalse(view.readonly)
+        with self.assertRaises(TypeError):
+            stream.getbuffer('stable-read')
+        for access in (0, True, b'stable-read', object()):
+            with self.subTest(access=access), self.assertRaises(TypeError):
+                stream.getbuffer(access=access)
+        for access in ('', 'read', 'write', 'STABLE-READ'):
+            with self.subTest(access=access), self.assertRaises(ValueError):
+                stream.getbuffer(access=access)
+        if self.ioclass is pyio.BytesIO:
+            with self.assertRaises(BufferError) as cm:
+                stream.getbuffer(access='stable-read')
+            self.assertIs(type(cm.exception), BufferError)
+        stream.close()
+        with self.assertRaises(ValueError):
+            stream.getbuffer(access='stable-read')
+
     def test_getbuffer_delete(self):
         # gh-111330, gh-111331: .close() works and the buffer stays working
         memio = self.ioclass(b"1234567890")
@@ -1000,9 +1020,9 @@ class CBytesIOTest(PyBytesIOTest):
     @support.cpython_only
     def test_sizeof(self):
         if support.Py_GIL_DISABLED:
-            basesize = support.calcobjsize('P2n2Pni')
+            basesize = support.calcobjsize('P2n2P2ni')
         else:
-            basesize = support.calcobjsize('P2n2Pn')
+            basesize = support.calcobjsize('P2n2P2n')
         check = self.check_sizeof
         self.assertEqual(object.__sizeof__(io.BytesIO()), basesize)
         check(io.BytesIO(), basesize )

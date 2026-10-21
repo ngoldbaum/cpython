@@ -1,0 +1,3 @@
+Add ``BytesIO.getbuffer(access="stable-read")`` with shared conflict checks
+for stable and writable exports. Preserve exported storage after close and
+check for exports after callbacks before mutating or reinitializing a stream.
